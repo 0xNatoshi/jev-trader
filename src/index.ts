@@ -19,7 +19,7 @@ const trader = new Trader(
   model,
   (e, t) => {
     server.broadcast(e);
-    if (e.decision && !e.decision.late && e.decision.action !== "hold") {
+    if (e.decision && !e.decision.late && e.fill) {
       const p = e.decision.probabilities;
       const f = e.fill;
       const fill = !f ? "" : f.confirmed

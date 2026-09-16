@@ -36,7 +36,8 @@ export interface Totals {
 
 /**
  * One decision every `config.decideEveryBlocks` blocks, one request in flight. Decided blocks trade; every
- * other block reads the book, polls trade prints, and emits a hold. Late blocks are holds too.
+ * other block reads the book, polls trade prints, and re-emits the standing buy/sell with no fill.
+ * The decision is always binary; `hold` only appears on late blocks.
  * Live sends are fire-and-forget: the block event carries the intent, and the fill is applied to the
  * position when its receipt turns up on a later block (`onFill`). Dry runs apply fills immediately.
  */
@@ -45,7 +46,7 @@ export class Trader {
   private mids: number[] = [];
   private busy = false;
   private lastBook: Book | null = null;
-  private lastDecision: { action: Action; block: number; upIn10: number } | null = null;
+  private lastDecision: { action: Action; block: number; decision: Decision } | null = null;
   private trades: TradeFeed | null = null;
   private position = { mon: 0, costUsd: 0 }; // signed inventory and its cost basis
   private inFlightMon = 0; // signed size of live sends not yet confirmed; counts toward the position cap
@@ -86,7 +87,7 @@ export class Trader {
 
       const due = !this.lastDecision || block - this.lastDecision.block >= config.decideEveryBlocks;
       if (!due) {
-        this.emit(block, book, null, null, false, { readMs: Math.round(readMs), loopMs: Math.round(performance.now() - t0) });
+        this.emit(block, book, this.lastDecision!.decision, null, false, { readMs: Math.round(readMs), loopMs: Math.round(performance.now() - t0) });
         return;
       }
       const decision = await this.model.decide(this.buildState(block, book));
@@ -95,7 +96,7 @@ export class Trader {
       decision.action = side;
       this.totals.decisions++;
       this.totals.jevUsd += (decision.inputTokens / 1e6) * config.jevUsdPerMTok;
-      this.lastDecision = { action: decision.action, block, upIn10: decision.upIn10 };
+      this.lastDecision = { action: decision.action, block, decision };
 
       const fill = await this.market.send(block, side, config.tradeSizeMon, book);
       if (fill.confirmed) this.applyFill(fill); // dry run only; live fills land in confirmPending
@@ -188,9 +189,7 @@ export class Trader {
       block, ts: Date.now(), mid: book.mid, bestBid: book.bid, bestAsk: book.ask, spreadBps: round(book.spreadBps, 2),
       decision: late
         ? { action: "hold", probabilities: { buy: 0, sell: 0, hold: 1 }, upIn10: 0.5, latencyMs: 0, late: true }
-        : decision
-          ? { action: decision.action, probabilities: decision.probabilities, upIn10: decision.upIn10, latencyMs: Math.round(decision.latencyMs), late: false }
-          : { action: "hold", probabilities: { buy: 0, sell: 0, hold: 1 }, upIn10: this.lastDecision?.upIn10 ?? 0.5, latencyMs: 0, late: false },
+        : decision && { action: decision.action, probabilities: decision.probabilities, upIn10: decision.upIn10, latencyMs: Math.round(decision.latencyMs), late: false },
       fill,
       position: {
         side: this.position.mon > 0 ? "long" : this.position.mon < 0 ? "short" : "flat",

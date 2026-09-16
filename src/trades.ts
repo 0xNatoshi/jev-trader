@@ -36,7 +36,7 @@ interface RawLog { blockNumber: string; logIndex: string; data: string; removed?
 /** Trade.price is a 1e18 fixed-point number on every Kuru market. */
 export const TRADE_PRICE_DEC = 18;
 const RING = 500;
-const FIRST_LOOKBACK = 20;
+const FIRST_LOOKBACK = 300;
 /** rpc.monad.xyz rejects eth_getLogs spans > 100 blocks ("eth_getLogs is limited to a 100 range", -32614). */
 const MAX_RANGE = 100;
 /** Never replay more than this many blocks in one poll (10 sequential getLogs calls at MAX_RANGE). */
@@ -60,7 +60,7 @@ export class TradeFeed {
   }
 
   /**
-   * Fetch Trade logs from lastBlock+1..block (first call: last 20 blocks) and append, in chunks of
+   * Fetch Trade logs from lastBlock+1..block (first call: last 300 blocks) and append, in chunks of
    * MAX_RANGE. lastBlock advances per chunk, so a mid-way failure keeps what was fetched and retries
    * the rest next time. Never throws; drops the call if a poll is already in flight.
    */

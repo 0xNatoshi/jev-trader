@@ -29,7 +29,7 @@ Every event (see `src/trader.ts` for types):
       "totals": { "blocks": 69, "decisions": 69, "trades": 5, "lateBlocks": 0, "jevUsd": 0.000004, "gasMon": 0, "gasUsd": 0, "realizedUsd": 0, "pnlUsd": -0.0093, "pnlMon": -0.42, "pnlPct": -0.009 }
     }
 
-`fill`, when present: `{ side, size, price, txHash, gasMon, simulated, confirmed }`. `decision.action` is `buy` or `sell`; `hold` appears only with `decision.late: true`, when the model missed the block and no trade happened. When the position cap blocks a side, the trade flips to the other side and `probabilities` still show the model's intent. `upIn10` equals the buy probability.
+`fill`, when present: `{ side, size, price, txHash, gasMon, simulated, confirmed }`. The model is asked every `DECIDE_EVERY_BLOCKS` blocks (default 10) about the move over `HORIZON_BLOCKS` (default 100, ~30 s); only those blocks carry a `fill`, and the blocks in between repeat the standing decision with `fill: null`. `decision.action` is `buy` or `sell`; `hold` appears only with `decision.late: true`, when the model missed the block and no trade happened. When the position cap blocks a side, the trade flips to the other side and `probabilities` still show the model's intent. `upIn10` equals the buy probability.
 
 Live orders are fired and forgotten, so the `block` event carries the **intent**: `confirmed: false`, `size` is the size asked for, `price` is the touch price, `gasMon` is `gasLimit x (last known base fee + priority)`. The position, P&L and `trades` are untouched until the receipt lands — up to a few blocks later — which arrives as its own SSE event:
 

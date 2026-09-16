@@ -160,17 +160,17 @@ export class Market {
     };
   }
 
-  /** Sum our Trade events. price / pricePrecision, filledSize / sizePrecision. */
+  /** Sum our Trade events. price is 1e18 fixed-point on every Kuru market (not pricePrecision); filledSize / sizePrecision. */
   private parseReceipt(r: any, p: Pending): Fill {
     if (r.effectiveGasPrice) this.feeWei = BN.from(r.effectiveGasPrice);
     const gasMon = this.gasMon(p.gasLimit, BN.from(r.effectiveGasPrice ?? this.feeWei));
     let base = 0, quote = 0;
     if (r.status !== "0x0") {
-      const pp = this.params.pricePrecision.toNumber(), sp = this.params.sizePrecision.toNumber();
+      const sp = this.params.sizePrecision.toNumber();
       for (const log of r.logs ?? []) {
         let ev; try { ev = this.iface.parseLog(log); } catch { continue; }
-        if (ev.name !== "Trade" || ev.args.taker.toLowerCase() !== this.wallet!.address.toLowerCase()) continue;
-        const size = Number(ev.args.filledSize) / sp, price = Number(ev.args.price) / pp;
+        if (ev.name !== "Trade" || String(ev.args.takerAddress).toLowerCase() !== this.wallet!.address.toLowerCase()) continue;
+        const size = Number(ev.args.filledSize) / sp, price = Number(ev.args.price) / 1e18;
         base += size; quote += size * price;
       }
     }
