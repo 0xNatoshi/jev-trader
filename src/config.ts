@@ -1,7 +1,9 @@
 const env = (key: string, fallback?: string) => process.env[key] ?? fallback;
+const num = (key: string) => (env(key) ? Number(env(key)) : undefined);
 
 export const config = {
-  rpcUrl: env("RPC_URL", "https://rpc.monad.xyz")!,
+  rpcUrl: env("RPC_URL", "https://rpc.monad.xyz")!, // sends, receipts, nonce, gas estimation
+  readRpcUrl: env("READ_RPC_URL", "https://rpc.monad.xyz")!, // book reads + eth_blockNumber polling
   wsUrl: env("WS_URL"), // optional; polling backstop always runs
   chainId: 143,
   market: env("MARKET", "0x065C9d28E428A0db40191a54d33d5b7c71a9C394")!, // Kuru MON-USDC
@@ -10,6 +12,15 @@ export const config = {
   tradeSizeMon: Number(env("TRADE_SIZE_MON", "200")), // Kuru MON-USDC minimum order is 200 MON
   maxPositionMon: Number(env("MAX_POSITION_MON", "1000")),
   bankrollUsd: Number(env("BANKROLL_USD", "100")), // used for pnlPct
+  // Monad charges gas on the LIMIT, so never estimate per trade: hardcode (or derive once at init).
+  gasLimitBuy: num("GAS_LIMIT_BUY"),
+  gasLimitSell: num("GAS_LIMIT_SELL"),
+  gasLimitFallback: 200_000,
+  // EIP-1559 type-2 only. Effective price = base + priority, so a high static cap is free.
+  maxFeeGwei: Number(env("MAX_FEE_GWEI", "400")),
+  priorityFeeGwei: Number(env("PRIORITY_FEE_GWEI", "2")), // Monad hardcodes eth_maxPriorityFeePerGas at 2
+  pendingBlocks: 10, // give up on a tx with no receipt after this many blocks
+  refreshBlocks: 200, // how often to refresh the fee estimate and the vault check
   model: env("MODEL", "mock") as "mock" | "jev",
   jevModelId: env("JEV_MODEL_ID", "jev-latest")!,
   jevUsdPerMTok: 0.042,

@@ -16,6 +16,9 @@ export interface BlockEvent {
   totals: Totals;
 }
 
+/** Per-block latency: the book read, and read + decide + send end to end. */
+export interface Timing { readMs: number; loopMs: number }
+
 export interface Totals {
   blocks: number;
   decisions: number;
@@ -30,7 +33,11 @@ export interface Totals {
   pnlPct: number;
 }
 
-/** One decision per block, one request in flight. Every decided block trades; late blocks are recorded as holds. */
+/**
+ * One decision per block, one request in flight. Every decided block trades; late blocks are holds.
+ * Live sends are fire-and-forget: the block event carries the intent, and the fill is applied to the
+ * position when its receipt turns up on a later block (`onFill`). Dry runs apply fills immediately.
+ */
 export class Trader {
   readonly history: BlockEvent[] = [];
   private mids: number[] = [];
@@ -38,22 +45,32 @@ export class Trader {
   private lastBook: Book | null = null;
   private lastDecision: { action: Action; block: number } | null = null;
   private position = { mon: 0, costUsd: 0 }; // signed inventory and its cost basis
+  private inFlightMon = 0; // signed size of live sends not yet confirmed; counts toward the position cap
   private totals: Totals = { blocks: 0, decisions: 0, trades: 0, lateBlocks: 0, jevUsd: 0, gasMon: 0, gasUsd: 0, realizedUsd: 0, pnlUsd: 0, pnlMon: 0, pnlPct: 0 };
 
-  constructor(private market: Market, private model: Model, private onEvent: (e: BlockEvent) => void) {
+  constructor(
+    private market: Market,
+    private model: Model,
+    private onEvent: (e: BlockEvent, timing?: Timing) => void,
+    private onFill: (block: number, fill: Fill) => void = () => {},
+  ) {
     mkdirSync("data", { recursive: true });
   }
 
   async onBlock(block: number) {
     this.totals.blocks++;
+    this.confirmPending(block); // off the hot path: receipts for earlier blocks' sends
+    if (this.totals.blocks % config.refreshBlocks === 0) this.market.refresh().catch(() => {}); // fee estimate + vault check
     if (this.busy) {
       this.totals.lateBlocks++;
       if (this.lastBook) this.emit(block, this.lastBook, null, null, true);
       return;
     }
     this.busy = true;
+    const t0 = performance.now();
     try {
       const book = await this.market.readBook();
+      const readMs = performance.now() - t0;
       this.lastBook = book;
       this.mids.push(book.mid);
       if (this.mids.length > 100) this.mids.shift();
@@ -66,13 +83,10 @@ export class Trader {
       this.totals.jevUsd += (decision.inputTokens / 1e6) * config.jevUsdPerMTok;
       this.lastDecision = { action: decision.action, block };
 
-      let fill: Fill | null = null;
-      {
-        fill = await this.market.execute(side, config.tradeSizeMon, book);
-        if (fill.size > 0) this.applyFill(fill);
-      }
-      if (block % 200 === 0) this.market.refreshGasPrice().catch(() => {});
-      this.emit(block, book, decision, fill, false);
+      const fill = await this.market.send(block, side, config.tradeSizeMon, book);
+      if (fill.confirmed) this.applyFill(fill); // dry run only; live fills land in confirmPending
+      else this.inFlightMon += side === "buy" ? fill.size : -fill.size;
+      this.emit(block, book, decision, fill, false, { readMs: Math.round(readMs), loopMs: Math.round(performance.now() - t0) });
     } catch (e) {
       console.error(`block ${block}:`, (e as Error).message);
     } finally {
@@ -80,8 +94,19 @@ export class Trader {
     }
   }
 
+  /** One eth_getTransactionReceipt per in-flight tx, in parallel with this block's decision. */
+  private confirmPending(block: number) {
+    this.market.pollPending(block).then((fills) => {
+      for (const { block: b, fill } of fills) {
+        this.inFlightMon -= fill.side === "buy" ? config.tradeSizeMon : -config.tradeSizeMon;
+        this.applyFill(fill);
+        this.onFill(b, fill);
+      }
+    }).catch(() => {});
+  }
+
   private allowed(action: Action) {
-    const next = this.position.mon + (action === "buy" ? config.tradeSizeMon : -config.tradeSizeMon);
+    const next = this.position.mon + this.inFlightMon + (action === "buy" ? config.tradeSizeMon : -config.tradeSizeMon);
     return Math.abs(next) <= config.maxPositionMon;
   }
 
@@ -102,7 +127,10 @@ export class Trader {
     };
   }
 
+  /** Gas is charged whether or not anything filled (reverts and drops included). */
   private applyFill(f: Fill) {
+    this.totals.gasMon += f.gasMon;
+    if (f.size <= 0) return;
     const signed = f.side === "buy" ? f.size : -f.size;
     const p = this.position;
     if (p.mon === 0 || Math.sign(p.mon) === Math.sign(signed)) {
@@ -118,13 +146,12 @@ export class Trader {
     p.mon += signed;
     if (Math.abs(p.mon) < 1e-9) { p.mon = 0; p.costUsd = 0; }
     this.totals.trades++;
-    this.totals.gasMon += f.gasMon;
   }
 
   private entryPrice() { return this.position.mon ? this.position.costUsd / this.position.mon : null; }
   private unrealizedUsd(mid: number) { return this.position.mon ? this.position.mon * (mid - this.entryPrice()!) : 0; }
 
-  private emit(block: number, book: Book, decision: Decision | null, fill: Fill | null, late: boolean) {
+  private emit(block: number, book: Book, decision: Decision | null, fill: Fill | null, late: boolean, timing?: Timing) {
     const t = this.totals;
     t.gasUsd = t.gasMon * book.mid;
     const unrealized = this.unrealizedUsd(book.mid);
@@ -147,7 +174,7 @@ export class Trader {
     this.history.push(event);
     if (this.history.length > config.historySize) this.history.shift();
     appendFileSync("data/events.jsonl", JSON.stringify(event) + "\n");
-    this.onEvent(event);
+    this.onEvent(event, timing);
   }
 }
 

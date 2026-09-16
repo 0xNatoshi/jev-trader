@@ -1,0 +1,157 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.section {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sectionLabel {
+  font-family: var(--font-sans), Inter, system-ui, sans-serif;
+  font-weight: 500;
+  font-size: 11px;
+  line-height: 1.2;
+  letter-spacing: 0.1em;
+  color: var(--muted-2);
+}
+
+.sectionLabelGap {
+  margin-bottom: 10px;
+}
+
+/* ---- (1) standing order ---- */
+
+.order {
+  margin-top: 6px;
+  font-family: var(--font-mono), "Geist Mono", ui-monospace, monospace;
+  font-weight: 400;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--ink-2);
+}
+
+.caret {
+  color: var(--buy);
+  animation: caretBlink 1s step-end infinite;
+}
+
+@keyframes caretBlink {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+/* ---- (2) + (3) bars ---- */
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 0;
+}
+
+.label {
+  width: 40px;
+  flex: none;
+  display: inline-block;
+  font-family: var(--font-sans), Inter, system-ui, sans-serif;
+  font-weight: 500;
+  font-size: 12px;
+  line-height: 1.2;
+  transition: opacity 0.3s;
+  will-change: transform;
+}
+
+/* Two identical animations so toggling the class restarts the pulse
+   without remounting the node (which would kill the opacity transition). */
+.pulseA {
+  animation: sidePulse 0.3s ease-out;
+}
+
+.pulseB {
+  animation: sidePulseAlt 0.3s ease-out;
+}
+
+@keyframes sidePulse {
+  0% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.06);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes sidePulseAlt {
+  0% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.06);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.track {
+  flex: 1;
+  min-width: 0;
+  height: 10px;
+  border-radius: 99px;
+  background: var(--track);
+  overflow: hidden;
+}
+
+.fill {
+  height: 100%;
+  border-radius: 99px;
+  transition: width 0.25s linear, background 0.25s;
+}
+
+.pct {
+  width: 36px;
+  flex: none;
+  text-align: right;
+  font-family: var(--font-mono), "Geist Mono", ui-monospace, monospace;
+  font-weight: 500;
+  font-size: 12px;
+  line-height: 1.2;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.pctValue {
+  display: inline-block;
+  animation: pctFade 0.25s ease-out;
+}
+
+@keyframes pctFade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .caret,
+  .pulseA,
+  .pulseB,
+  .pctValue {
+    animation: none;
+  }
+
+  .label,
+  .fill {
+    transition: none;
+  }
+}

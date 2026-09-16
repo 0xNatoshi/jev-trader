@@ -1,4 +1,5 @@
 import { config } from "./config";
+import type { Fill } from "./market";
 import type { BlockEvent } from "./trader";
 
 interface Meta { model: string; wallet: string | null; dryRun: boolean; market: string; startedAt: number }
@@ -6,7 +7,7 @@ interface Meta { model: string; wallet: string | null; dryRun: boolean; market: 
 const CORS = { "access-control-allow-origin": "*", "access-control-allow-headers": "*" };
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { ...CORS, "content-type": "application/json" } });
 
-/** GET / snapshot · GET /history recent blocks · GET /events SSE stream */
+/** GET / snapshot · GET /history recent blocks · GET /events SSE stream (`snapshot`, `block`, `fill`, `ping`) */
 export function startServer(meta: Meta, history: () => BlockEvent[]) {
   const clients = new Set<ReadableStreamDefaultController<Uint8Array>>();
   const enc = new TextEncoder();
@@ -33,5 +34,10 @@ export function startServer(meta: Meta, history: () => BlockEvent[]) {
     },
   });
 
-  return { broadcast: (e: BlockEvent) => clients.forEach((c) => send(c, "block", e)) };
+  const broadcast = (type: string, data: unknown) => clients.forEach((c) => send(c, type, data));
+  return {
+    broadcast: (e: BlockEvent) => broadcast("block", e),
+    /** A live send's receipt landed: real size, price and gas for the block that decided it. */
+    broadcastFill: (block: number, fill: Fill) => broadcast("fill", { block, fill }),
+  };
 }

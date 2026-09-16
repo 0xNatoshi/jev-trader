@@ -1,0 +1,171 @@
+/* FlowChart — the hero. Panel + hand-rolled SVG price flow. */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.panel {
+  position: relative;
+  background: var(--panel);
+  border-radius: 20px;
+  overflow: hidden;
+}
+
+.svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* the sliding group: one 12px step left per block */
+.slide {
+  transition: transform 0.3s linear;
+}
+
+.path {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.midline {
+  stroke: #e8e6e0;
+  stroke-dasharray: 2 6;
+}
+
+.grid {
+  stroke: #efede8;
+}
+
+.scaleLabel {
+  font: 400 10px var(--font-mono), monospace;
+  fill: var(--muted-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.fillLabel {
+  font: 500 11px var(--font-mono), monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* a new fill dot scales in from its own centre */
+.dot {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: dotIn 0.3s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+
+@keyframes dotIn {
+  from { transform: scale(0); }
+  to { transform: scale(1); }
+}
+
+/* soft pulse behind the end dot */
+.halo {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: halo 1.9s ease-out infinite;
+  pointer-events: none;
+}
+
+@keyframes halo {
+  0% { transform: scale(1); opacity: 0.32; }
+  70%, 100% { transform: scale(2.8); opacity: 0; }
+}
+
+.fade {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 80px;
+  background: linear-gradient(90deg, var(--panel), transparent);
+  pointer-events: none;
+}
+
+.tl {
+  position: absolute;
+  top: 16px;
+  left: 20px;
+  pointer-events: none;
+}
+
+.price {
+  font: 500 34px var(--font-mono), monospace;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  animation: priceIn 0.3s ease-out;
+}
+
+@keyframes priceIn {
+  from { opacity: 0.4; }
+  to { opacity: 1; }
+}
+
+.sub {
+  font: 400 12px var(--font-sans), sans-serif;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.tr {
+  position: absolute;
+  top: 16px;
+  right: 20px;
+  text-align: right;
+  pointer-events: none;
+}
+
+.word {
+  font: 300 30px var(--font-sans), sans-serif;
+  letter-spacing: -0.02em;
+  transition: color 0.3s;
+  white-space: nowrap;
+}
+
+.subR {
+  composes: sub;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.empty {
+  aspect-ratio: 880 / 640;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: 400 13px var(--font-sans), sans-serif;
+  color: var(--muted-2);
+}
+
+.stance {
+  display: flex;
+  gap: 18px;
+  padding: 10px 4px 0;
+  font: 400 12.5px var(--font-sans), sans-serif;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+.mono {
+  font: 500 12.5px var(--font-mono), monospace;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.note {
+  color: var(--muted-2);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .slide, .word { transition: none; }
+  .dot, .halo, .price { animation: none; }
+}

@@ -1,0 +1,41 @@
+/* Page shell — the 5e "Eleven" layout. Component-level styling lives with each
+   component; this file only owns the card scaffolding and the two-column row. */
+
+.main {
+  display: flex;
+  gap: 16px;
+  padding: 0 24px;
+  align-items: stretch;
+}
+
+.left {
+  flex: 1;
+  min-width: 0;
+}
+
+.right {
+  width: 470px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  overflow: hidden;
+}
+
+/* The feed fills whatever the decision panel leaves behind. */
+.right > :last-child {
+  flex: 1;
+  min-height: 0;
+}
+
+@media (max-width: 900px) {
+  .main {
+    flex-direction: column;
+    padding: 0 16px;
+  }
+
+  .right {
+    width: 100%;
+  }
+}

@@ -1,8 +1,8 @@
 import { config } from "./config";
 
-/** Raw JSON-RPC call over HTTP. */
-export async function rpc<T = unknown>(method: string, params: unknown[] = []): Promise<T> {
-  const res = await fetch(config.rpcUrl, {
+/** Raw JSON-RPC call over HTTP. Defaults to the send RPC; pass `config.readRpcUrl` for reads. */
+export async function rpc<T = unknown>(method: string, params: unknown[] = [], url = config.rpcUrl): Promise<T> {
+  const res = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
@@ -13,20 +13,23 @@ export async function rpc<T = unknown>(method: string, params: unknown[] = []): 
 }
 
 /**
- * Emits each new block number exactly once.
+ * Emits new block numbers, coalesced to the newest one.
  * Primary: WebSocket newHeads (fires when a block is Proposed).
- * Backstop: HTTP polling, so the loop keeps running if the socket drops or is unavailable.
+ * Backstop: HTTP polling on the read RPC, so the loop keeps running if the socket drops.
+ * A burst of heads in one tick runs the loop once, for the newest block only — never for a stale one.
  */
 export function startBlockFeed(onBlock: (block: number) => void, pollMs = 150) {
-  let last = 0;
+  let last = 0, newest = 0, scheduled = false;
   const emit = (block: number) => {
     if (block <= last) return;
-    last = block;
-    onBlock(block);
+    last = newest = block;
+    if (scheduled) return;
+    scheduled = true;
+    setTimeout(() => { scheduled = false; onBlock(newest); }, 0);
   };
 
   const poll = async () => {
-    try { emit(parseInt(await rpc<string>("eth_blockNumber"), 16)); } catch {}
+    try { emit(parseInt(await rpc<string>("eth_blockNumber", [], config.readRpcUrl), 16)); } catch {}
   };
   setInterval(poll, pollMs);
   poll();
