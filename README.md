@@ -12,11 +12,24 @@ With no `PRIVATE_KEY` it dry-runs: real book, real decisions, simulated fills. S
 
 ## Endpoints
 
+Deployed (dry run, mock model): https://jev-trader-production.up.railway.app
+
 - `GET /` snapshot: model, wallet, dryRun, latest block event
 - `GET /history` last 1000 block events
 - `GET /events` SSE: `snapshot` on connect, then one `block` event per block
 
-Every event: `{ block, ts, mid, bestBid, bestAsk, spreadBps, decision, fill, position, totals }`. See `src/trader.ts` for the exact shape.
+Every event (see `src/trader.ts` for types):
+
+    {
+      "block": 105424978, "ts": 1789593630676,
+      "mid": 0.0222735, "bestBid": 0.022265, "bestAsk": 0.022282, "spreadBps": 7.63,
+      "decision": { "action": "hold", "probabilities": { "buy": 0.15, "sell": 0.05, "hold": 0.80 }, "upIn10": 0.57, "latencyMs": 81, "late": false },
+      "fill": null,
+      "position": { "side": "short", "size": 1000, "entryPrice": 0.0222642, "unrealizedUsd": -0.0093, "unrealizedMon": -0.42 },
+      "totals": { "blocks": 69, "decisions": 69, "trades": 5, "lateBlocks": 0, "jevUsd": 0.000004, "gasMon": 0, "gasUsd": 0, "realizedUsd": 0, "pnlUsd": -0.0093, "pnlMon": -0.42, "pnlPct": -0.009 }
+    }
+
+`fill`, when present: `{ side, size, price, txHash, gasMon, simulated }`. `decision.late` is true when the model missed the block (treated as hold). `decision.action` is forced to `hold` when the position limit blocks a trade; `probabilities` still show intent.
 
 ## Layout
 

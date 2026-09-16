@@ -78,7 +78,8 @@ export class MockModel implements Model {
 
   async decide(state: TradeState): Promise<Decision> {
     const t0 = performance.now();
-    const signal = state.returnsBps.last5 / 4 + state.bookImbalance * 2 + this.noise(state.block);
+    // momentum + book imbalance + noise, pulled back toward flat so it trades both ways
+    const signal = state.returnsBps.last5 / 4 + state.bookImbalance * 2 + this.noise(state.block) - (state.position.mon / config.maxPositionMon) * 2.5;
     const logits = { buy: signal, sell: -signal, hold: 2.2 };
     const z = Object.values(logits).reduce((s, v) => s + Math.exp(v), 0);
     const probabilities = {
