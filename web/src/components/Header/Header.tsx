@@ -11,10 +11,10 @@ export interface HeaderProps {
   connection: ConnectionState;
 }
 
-const CONNECTION_LABEL: Record<ConnectionState, string> = {
-  live: "Live",
-  connecting: "Connecting…",
-  reconnecting: "Reconnecting…",
+/** Only shown when we are NOT live. Live is the silent, default state. */
+const OFFLINE_LABEL: Partial<Record<ConnectionState, string>> = {
+  connecting: "connecting",
+  reconnecting: "reconnecting",
 };
 
 export default function Header({ meta, latest, connection }: HeaderProps) {
@@ -35,7 +35,7 @@ export default function Header({ meta, latest, connection }: HeaderProps) {
     try {
       void navigator.clipboard?.writeText(wallet)?.catch(() => {});
     } catch {
-      /* clipboard unavailable — still flash "copied" so the click feels alive */
+      /* clipboard unavailable, still flash "copied" so the click feels alive */
     }
     setCopied(true);
     if (copyTimer.current) clearTimeout(copyTimer.current);
@@ -44,24 +44,24 @@ export default function Header({ meta, latest, connection }: HeaderProps) {
 
   const model = meta?.model ?? null;
   const isJev = (model ?? "").toLowerCase().startsWith("jev");
-  const isLive = connection === "live";
+  const offline = OFFLINE_LABEL[connection] ?? null;
 
   return (
     <div className={styles.header}>
       <span className={styles.brand}>‖ Jev Trader</span>
 
-      <span key={latest?.block ?? "no-block"} className={styles.block}>
-        block {latest ? fmtInt(latest.block) : "—"}
-      </span>
+      <span className={styles.block}>block {latest ? fmtInt(latest.block) : "-"}</span>
 
       <span className={styles.spacer} />
+
+      {offline ? <span className={styles.offline}>{offline}</span> : null}
 
       <button
         type="button"
         className={styles.wallet}
         onClick={onCopy}
         disabled={!wallet}
-        title={wallet ?? "no wallet — dry run"}
+        title={wallet ?? "no wallet, dry run"}
         aria-label={wallet ? `Copy wallet address ${wallet}` : "Dry run"}
       >
         {copied ? "copied" : wallet ? shortAddr(wallet) : "dry run"}
@@ -80,14 +80,6 @@ export default function Header({ meta, latest, connection }: HeaderProps) {
           {model}
         </span>
       ) : null}
-
-      <span className={styles.live}>
-        <span
-          className={styles.dot}
-          style={{ background: isLive ? "var(--live-dot)" : "#F2C063" }}
-        />
-        {CONNECTION_LABEL[connection]}
-      </span>
     </div>
   );
 }

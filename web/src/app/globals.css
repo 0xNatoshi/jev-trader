@@ -110,45 +110,37 @@ svg {
   max-width: 100%;
 }
 
-/* ---- the card: the design's 1400px white slab, centered on the warm page ---- */
+/* ---- the card: the design's 1400px white slab, centered on the warm page ----
+   Desktop (>= 900px): the card is exactly the viewport minus its 16px margins
+   and is a flex column, so header + stats take their natural height and the
+   main row absorbs the rest. Nothing can overflow -> no page scrollbar.
+   Below 900px the card is auto-height and the page scrolls normally. */
 .card {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--card-radius);
   /* 16px side gutters at every width, centered, never wider than 1400px */
   max-width: min(var(--card-max), calc(100% - 32px));
-  margin: 24px auto;
+  margin: 16px auto;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  /* breathing room under the main row (there is no footer any more) */
+  padding-bottom: 16px;
 }
 
-@media (max-width: 900px) {
+@media (min-width: 900px) {
+  /* the card already fills the viewport; never let the document scroll */
+  body {
+    overflow: hidden;
+  }
+
   .card {
-    margin: 16px auto;
+    /* 16px margin top + 16px bottom; border-box keeps the 1px borders inside */
+    height: calc(100vh - 32px);
   }
 }
 
-/* ---- motion ---- */
-@keyframes pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.25;
-  }
-}
-
-@keyframes breathe {
-  0%,
-  100% {
-    transform: scale(1);
-    opacity: 1;
-  }
-  50% {
-    transform: scale(1.06);
-    opacity: 0.82;
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
   *,

@@ -1,49 +1,27 @@
 "use client";
 
-import { useMemo, useRef } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { BlockEvent } from "@/lib/types";
 import { fmtConf, fmtMon, fmtPrice, fmtSigned, fmtSignedMon } from "@/lib/format";
+import { smoothPath } from "./smooth";
 import styles from "./FlowChart.module.css";
 
-/* geometry — exactly the design's turn-4 flow chart (sim-script fx / fy4) */
-const STEP = 12; // px per block
-const ANCHOR = 840; // newest block sits here
-const WINDOW = 120; // blocks kept on screen
-const PAD = 40; // fy4 = PAD + (1-t)*(HEIGHT - 2*PAD)
-const HEIGHT = 560;
-const SPAN = HEIGHT - 2 * PAD; // 480 -> y runs 40..520
-const EASE = 0.08; // scale easing per new block
-const MIN_RANGE = 1e-6;
-const CELL_Y = 596;
+const STEP = 10; // px per block
+const ANCHOR_GAP = 88; // newest point sits this far from the right edge
+const PAD_TOP = 84; // overlays live here
+const PAD_BOTTOM = 72; // block strip + tag clearance
+const EASE = 0.1; // scale easing per new block
+const MIN_RANGE_PCT = 0.002; // floor of 0.20% of price, so bps noise stays calm
+const CELL_W = 6;
+const CELL_H = 18;
+const TAG_W = 58;
 
-type Kind = "buy" | "sell" | "late" | "hold";
-
-const CELL: Record<Kind, string> = {
-  buy: "var(--buy-bar)",
-  sell: "var(--sell-bar)",
-  late: "var(--late-cell)",
-  hold: "var(--hold-cell)",
-};
-
-function kindOf(e: BlockEvent): Kind {
-  const d = e.decision;
-  if (!d) return "hold";
-  if (d.late) return "late";
-  return d.action === "buy" ? "buy" : d.action === "sell" ? "sell" : "hold";
-}
-
-interface Dot {
-  block: number;
-  x: number;
-  y: number;
-  color: string;
-  label: string | null;
-  opacity: number;
-}
-interface Cell {
-  block: number;
-  x: number;
-  color: string;
+function cellFill(e: BlockEvent): string {
+  if (e.decision?.late) return "var(--late-cell)";
+  const side = e.fill?.side ?? e.decision?.action;
+  if (side === "buy") return "var(--buy-bar)";
+  if (side === "sell") return "var(--sell-bar)";
+  return "var(--hold-cell)";
 }
 
 export default function FlowChart({
@@ -53,26 +31,60 @@ export default function FlowChart({
   events: BlockEvent[];
   latest: BlockEvent | null;
 }) {
-  // the x origin is fixed for the life of the component, so that every new
-  // block moves fx(latest) 12px further right and the shift 12px further left.
+  const panelRef = useRef<HTMLDivElement | null>(null);
   const originRef = useRef<number | null>(null);
   const scaleRef = useRef<{ lo: number; hi: number; block: number } | null>(null);
+  const [size, setSize] = useState({ w: 0, h: 0 });
+  const [hover, setHover] = useState<number | null>(null);
+  const gid = useId().replace(/[^a-zA-Z0-9]/g, "");
+
+  useEffect(() => {
+    const el = panelRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const r = entries[0].contentRect;
+      setSize((s) =>
+        Math.abs(s.w - r.width) < 0.5 && Math.abs(s.h - r.height) < 0.5
+          ? s
+          : { w: Math.round(r.width), h: Math.round(r.height) },
+      );
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const { w, h } = size;
 
   const model = useMemo(() => {
-    const win = events.slice(-WINDOW);
-    const last = latest ?? win[win.length - 1] ?? null;
-    if (!win.length || !last) return null;
+    const plotH = h - PAD_TOP - PAD_BOTTOM;
+    if (w < 160 || plotH < 60) return null;
 
-    if (originRef.current === null) originRef.current = win[0].block;
+    const n = Math.max(2, Math.ceil((w - ANCHOR_GAP) / STEP) + 2);
+    let series = events.slice(-n);
+    const tail = series[series.length - 1];
+    if (latest && (!tail || latest.block > tail.block)) series = [...series, latest].slice(-n);
+    else if (latest && tail && latest.block === tail.block) series[series.length - 1] = latest;
+    const last = series[series.length - 1];
+    if (!last) return null;
+
+    if (originRef.current === null) originRef.current = series[0].block;
     const origin = originRef.current;
-    const fx = (block: number) => (block - origin) * STEP;
+    const fx = (b: number) => (b - origin) * STEP;
 
-    // smoothed value scale: ease 8% per NEW block toward the window min/max
-    let lo = win[0].mid;
-    let hi = win[0].mid;
-    for (const e of win) {
+    // --- value scale: window min/max, floored to 0.20% of price, eased 10%/block
+    let lo = Infinity;
+    let hi = -Infinity;
+    let sum = 0;
+    for (const e of series) {
       if (e.mid < lo) lo = e.mid;
       if (e.mid > hi) hi = e.mid;
+      sum += e.mid;
+    }
+    const mean = sum / series.length;
+    const floor = Math.max(mean * MIN_RANGE_PCT, 1e-9);
+    if (hi - lo < floor) {
+      lo = mean - floor / 2;
+      hi = mean + floor / 2;
     }
     const prev = scaleRef.current;
     if (prev) {
@@ -83,140 +95,187 @@ export default function FlowChart({
         lo = prev.lo + (lo - prev.lo) * EASE;
         hi = prev.hi + (hi - prev.hi) * EASE;
       }
+      // the eased band must still contain the data: shrink slowly, grow at once
+      for (const e of series) {
+        if (e.mid < lo) lo = e.mid;
+        if (e.mid > hi) hi = e.mid;
+      }
+      if (hi - lo < floor) {
+        const c = (hi + lo) / 2;
+        lo = c - floor / 2;
+        hi = c + floor / 2;
+      }
     }
-    if (hi - lo < MIN_RANGE) hi = lo + MIN_RANGE;
     scaleRef.current = { lo, hi, block: last.block };
 
-    const range = hi - lo;
-    const fy = (p: number) => PAD + (1 - (p - lo) / range) * SPAN;
+    const range = hi - lo || 1;
+    const fy = (p: number) => PAD_TOP + (1 - (p - lo) / range) * plotH;
 
-    const path = win
-      .map((e, i) => `${i ? "L" : "M"}${fx(e.block).toFixed(1)} ${fy(e.mid).toFixed(1)}`)
-      .join(" ");
+    const pts = series.map((e) => [fx(e.block), fy(e.mid)] as const);
+    const line = smoothPath(pts);
+    const base = h - PAD_BOTTOM;
+    const area = `${line} L${pts[pts.length - 1][0].toFixed(1)} ${base} L${pts[0][0].toFixed(1)} ${base} Z`;
 
-    // fills: a dot each, a price label only on the latest fill and on side flips
-    const filled = win.filter((e) => e.fill);
-    const dots: Dot[] = filled.map((e, i) => {
-      const f = e.fill!;
-      const prevSide = i > 0 ? filled[i - 1].fill!.side : null;
-      const labelled = i === filled.length - 1 || f.side !== prevSide;
-      return {
-        block: e.block,
-        x: fx(e.block),
-        y: fy(f.price),
-        color: f.side === "buy" ? "var(--buy)" : "var(--sell)",
-        label: labelled ? fmtPrice(f.price) : null,
-        opacity: f.confirmed ? 1 : 0.7,
-      };
-    });
-
-    const cells: Cell[] = win.map((e) => ({
-      block: e.block,
-      x: fx(e.block) - 4.5,
-      color: CELL[kindOf(e)],
+    const cells = series.map((e, i) => ({
+      key: e.block,
+      x: fx(e.block) - CELL_W / 2,
+      fill: cellFill(e),
+      opacity: i === series.length - 1 ? 1 : e.fill && !e.fill.confirmed ? 0.6 : 0.82,
     }));
 
-    // static right-edge price scale (outside the sliding group)
-    const ticks = [0, 1, 2, 3].map((i) => {
-      const y = PAD + ((i + 0.5) * SPAN) / 4;
-      return { y, label: fmtPrice(lo + (1 - (y - PAD) / SPAN) * range) };
-    });
+    const beads = series
+      .filter((e) => e.fill)
+      .map((e) => ({
+        key: e.block,
+        x: fx(e.block),
+        y: fy(e.mid),
+        fill: e.fill!.side === "buy" ? "var(--buy)" : "var(--sell)",
+      }));
+
+    const ticks = [0.25, 0.5, 0.75].map((f) => ({
+      y: PAD_TOP + plotH * f,
+      label: fmtPrice(lo + (1 - f) * range),
+    }));
+
+    const byBlock = new Map(series.map((e) => [e.block, e]));
 
     return {
-      path,
-      dots,
+      line,
+      area,
       cells,
+      beads,
       ticks,
-      shift: ANCHOR - fx(last.block),
-      endX: fx(last.block),
+      byBlock,
+      fx,
+      fy,
+      last,
+      base,
+      shift: w - ANCHOR_GAP - fx(last.block),
       endY: fy(last.mid),
     };
-  }, [events, latest]);
+  }, [events, latest, w, h]);
+
+  const hv = useMemo(() => {
+    if (!model || hover === null) return null;
+    const e = model.byBlock.get(hover);
+    if (!e) return null;
+    const x = model.fx(e.block);
+    const flip = x + model.shift > w - 168;
+    const ty = Math.min(Math.max(model.fy(e.mid) - 92, PAD_TOP - 46), model.base - 82);
+    const side = e.fill ? (e.fill.side === "buy" ? "BUY" : "SELL") : null;
+    return {
+      x,
+      y: model.fy(e.mid),
+      tx: flip ? x - 146 : x + 14,
+      ty,
+      block: `#${e.block}`,
+      price: fmtPrice(e.mid),
+      trade: side ? `${side} ${fmtMon(e.fill!.size, 0)}` : "no fill",
+      tint: e.fill ? (e.fill.side === "buy" ? "var(--buy-ink)" : "var(--sell-ink)") : "var(--muted)",
+      lat: e.decision && !e.decision.late ? `${Math.round(e.decision.latencyMs)} ms` : "late",
+    };
+  }, [model, hover, w]);
 
   const shown = latest ?? events[events.length - 1] ?? null;
   const d = shown?.decision ?? null;
   const late = d?.late === true;
-  const action = late ? "late" : (d?.action ?? "hold");
+  const act = late ? "late" : (d?.action ?? "hold");
   const word =
-    action === "buy"
-      ? "Buying"
-      : action === "sell"
-        ? "Selling"
-        : action === "late"
-          ? "Missed the block"
-          : "Holding";
+    act === "buy" ? "Buying" : act === "sell" ? "Selling" : act === "late" ? "Missed the block" : "Holding";
   const wordColor =
-    action === "buy"
+    act === "buy"
       ? "var(--buy-ink)"
-      : action === "sell"
+      : act === "sell"
         ? "var(--sell-ink)"
-        : action === "late"
+        : act === "late"
           ? "var(--late-ink)"
           : "var(--ink)";
   const conf = d ? Math.max(d.probabilities.buy, d.probabilities.sell, d.probabilities.hold) : 0;
-  const subRight = !d || late ? "— ms · conf —" : `${Math.round(d.latencyMs)} ms · conf ${fmtConf(conf)}`;
-
   const pos = shown?.position;
   const stance =
     !pos || pos.side === "flat"
       ? "flat"
       : `${pos.side} ${fmtMon(pos.size, Number.isInteger(pos.size) ? 0 : 3)}`;
-  const t = shown?.totals;
-  const pnlMon = t?.pnlMon ?? 0;
-  const pnlPct = t?.pnlPct ?? 0;
+  const pnlMon = shown?.totals?.pnlMon ?? 0;
+  const pnlPct = shown?.totals?.pnlPct ?? 0;
 
   return (
     <div className={styles.wrap}>
-      <div className={styles.panel}>
+      <div
+        ref={panelRef}
+        className={styles.panel}
+        onPointerMove={(ev) => {
+          if (ev.pointerType !== "mouse" || !model || originRef.current === null) return;
+          const r = ev.currentTarget.getBoundingClientRect();
+          const b = Math.round((ev.clientX - r.left - model.shift) / STEP) + originRef.current;
+          setHover(model.byBlock.has(b) ? b : null);
+        }}
+        onPointerLeave={() => setHover(null)}
+      >
         {!model || !shown ? (
           <div className={styles.empty}>waiting for blocks…</div>
         ) : (
           <>
-            <svg
-              className={styles.svg}
-              viewBox="0 0 880 640"
-              width="880"
-              height="640"
-              preserveAspectRatio="xMidYMid meet"
-              aria-hidden="true"
-            >
-              {/* static furniture */}
-              {model.ticks.map((tk) => (
-                <line key={tk.y} className={styles.grid} x1="0" y1={tk.y} x2="880" y2={tk.y} />
-              ))}
-              <line className={styles.midline} x1="0" y1="290" x2="880" y2="290" />
+            <svg className={styles.svg} viewBox={`0 0 ${w} ${h}`} width={w} height={h} aria-hidden="true">
+              <defs>
+                <linearGradient id={`g${gid}`} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="rgba(10,10,10,0.07)" />
+                  <stop offset="100%" stopColor="rgba(10,10,10,0)" />
+                </linearGradient>
+              </defs>
 
-              {/* the sliding chart */}
+              {model.ticks.map((t) => (
+                <line key={t.y} className={styles.grid} x1="0" x2={w} y1={t.y} y2={t.y} />
+              ))}
+
               <g className={styles.slide} style={{ transform: `translateX(${model.shift.toFixed(1)}px)` }}>
-                <path className={styles.path} d={model.path} />
-                {model.dots.map((dot) => (
-                  <g key={dot.block} opacity={dot.opacity}>
-                    <circle className={styles.dot} cx={dot.x} cy={dot.y} r="3.5" fill={dot.color} />
-                    {dot.label ? (
-                      <text
-                        className={styles.fillLabel}
-                        x={dot.x - 22}
-                        y={dot.y - 13}
-                        fill={dot.color}
-                      >
-                        {dot.label}
-                      </text>
-                    ) : null}
-                  </g>
+                <path d={model.area} fill={`url(#g${gid})`} />
+                <path className={styles.line} d={model.line} />
+                {model.beads.map((b) => (
+                  <circle key={b.key} cx={b.x} cy={b.y} r="3" fill={b.fill} opacity="0.7" />
                 ))}
                 {model.cells.map((c) => (
-                  <rect key={c.block} x={c.x} y={CELL_Y} width="9" height="30" rx="4" fill={c.color} />
+                  <rect
+                    key={c.key}
+                    x={c.x}
+                    y={h - 40}
+                    width={CELL_W}
+                    height={CELL_H}
+                    rx="3"
+                    fill={c.fill}
+                    opacity={c.opacity}
+                  />
                 ))}
-                <circle className={styles.halo} cx={model.endX} cy={model.endY} r="4" fill="var(--ink)" />
-                <circle cx={model.endX} cy={model.endY} r="4" fill="var(--ink)" />
+                {hv ? (
+                  <g>
+                    <line className={styles.cross} x1={hv.x} x2={hv.x} y1={PAD_TOP - 12} y2={model.base + 10} />
+                    <circle className={styles.crossDot} cx={hv.x} cy={hv.y} r="4.5" />
+                    <g transform={`translate(${hv.tx.toFixed(1)},${hv.ty.toFixed(1)})`}>
+                      <rect className={styles.tip} width="132" height="78" rx="10" />
+                      <text className={styles.tipBlock} x="12" y="21">{hv.block}</text>
+                      <text className={styles.tipPrice} x="12" y="41">{hv.price}</text>
+                      <text className={styles.tipSide} x="12" y="58" fill={hv.tint}>{hv.trade}</text>
+                      <text className={styles.tipMeta} x="12" y="71">{hv.lat}</text>
+                    </g>
+                  </g>
+                ) : null}
               </g>
 
-              {/* right-edge price scale */}
-              {model.ticks.map((tk) => (
-                <text key={`l${tk.y}`} className={styles.scaleLabel} x="872" y={tk.y - 5} textAnchor="end">
-                  {tk.label}
+              {model.ticks.map((t) => (
+                <text key={`l${t.y}`} className={styles.tick} x={w - 8} y={t.y - 5} textAnchor="end">
+                  {t.label}
                 </text>
               ))}
+
+              <g className={styles.tag} style={{ transform: `translateY(${model.endY.toFixed(1)}px)` }}>
+                <line className={styles.guide} x1={w - ANCHOR_GAP + 8} x2={w - TAG_W - 6} y1="0" y2="0" />
+                <circle className={styles.halo} cx={w - ANCHOR_GAP} cy="0" r="4" fill="var(--ink)" />
+                <circle cx={w - ANCHOR_GAP} cy="0" r="4" fill="var(--ink)" />
+                <rect x={w - TAG_W - 4} y="-10" width={TAG_W} height="20" rx="999" fill="var(--ink)" />
+                <text className={styles.tagText} x={w - 4 - TAG_W / 2} y="4" textAnchor="middle">
+                  {fmtPrice(model.last.mid)}
+                </text>
+              </g>
             </svg>
 
             <div className={styles.fade} />
@@ -225,28 +284,27 @@ export default function FlowChart({
               <div className={styles.price} key={shown.mid}>
                 {fmtPrice(shown.mid)}
               </div>
-              <div className={styles.sub}>MON/USDC · Kuru</div>
+              <div className={styles.sub}>
+                <span>MON/USDC</span>
+                <span>Kuru</span>
+                <span>{stance}</span>
+                <span style={{ color: pnlMon >= 0 ? "var(--pnl-pos)" : "var(--pnl-neg)" }}>
+                  p&amp;l {fmtSignedMon(pnlMon, 3)} ({fmtSigned(pnlPct, 2)}%)
+                </span>
+              </div>
             </div>
 
             <div className={styles.tr}>
               <div className={styles.word} style={{ color: wordColor }}>
                 {word}
               </div>
-              <div className={styles.subR}>{subRight}</div>
+              <div className={styles.sub}>
+                <span>{!d || late ? "late" : `${Math.round(d.latencyMs)} ms`}</span>
+                <span>conf {fmtConf(conf)}</span>
+              </div>
             </div>
           </>
         )}
-      </div>
-
-      <div className={styles.stance}>
-        <span>
-          stance <span className={styles.mono}>{stance}</span>
-        </span>
-        <span style={{ color: pnlMon >= 0 ? "var(--pnl-pos)" : "var(--pnl-neg)" }}>
-          p&amp;l {fmtSignedMon(pnlMon, 3)} ({fmtSigned(pnlPct, 2)}%)
-        </span>
-        <span className={styles.spacer} />
-        <span className={styles.note}>one tile = one trade, every block</span>
       </div>
     </div>
   );

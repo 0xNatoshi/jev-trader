@@ -2,10 +2,10 @@
 
 import { useEffect, useState } from "react";
 import type { BlockEvent, Meta } from "@/lib/types";
-import { fmtInt, fmtMon, fmtUsd, uptime } from "@/lib/format";
+import { fmtInt, uptime } from "@/lib/format";
 import styles from "./StatsRow.module.css";
 
-const DASH = "—";
+const DASH = "-";
 
 export default function StatsRow({
   latest,
@@ -33,7 +33,8 @@ export default function StatsRow({
 
   const decision = latest?.decision ?? null;
   const last = decision && !decision.late ? `${decision.latencyMs} ms` : `${DASH} ms`;
-  const avg = Number.isFinite(avgLatencyMs) && avgLatencyMs > 0 ? `${Math.round(avgLatencyMs)}ms` : DASH;
+  const avg =
+    Number.isFinite(avgLatencyMs) && avgLatencyMs > 0 ? `${Math.round(avgLatencyMs)}ms` : DASH;
   const totals = latest?.totals ?? null;
 
   return (
@@ -41,10 +42,8 @@ export default function StatsRow({
       <span>last {last}</span>
       <span>avg {avg}</span>
       <span className={styles.nowrap}>{totals ? fmtInt(totals.decisions) : DASH} calls</span>
-      <span>jev {totals ? fmtUsd(totals.jevUsd) : DASH}</span>
-      <span>gas {totals ? fmtMon(totals.gasMon) : DASH}</span>
       <span className={styles.spacer} />
-      <span>uptime {up ?? "--:--:--"}</span>
+      <span>uptime {up ?? "00:00:00"}</span>
     </div>
   );
 }

@@ -1,30 +1,37 @@
-/* FlowChart — the hero. Panel + hand-rolled SVG price flow. */
+/* FlowChart: the hero. A calm, responsive price flow drawn by hand in SVG. */
 
 .wrap {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  min-width: 0;
 }
 
 .panel {
   position: relative;
+  flex: 1;
+  min-height: 0;
   background: var(--panel);
   border-radius: 20px;
   overflow: hidden;
 }
 
 .svg {
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
-  height: auto;
+  height: 100%;
 }
 
-/* the sliding group: one 12px step left per block */
+/* the sliding group: exactly one 10px step left per block */
 .slide {
   transition: transform 0.3s linear;
 }
 
-.path {
+.line {
   fill: none;
   stroke: var(--ink);
   stroke-width: 1.6;
@@ -32,49 +39,90 @@
   stroke-linecap: round;
 }
 
-.midline {
-  stroke: #e8e6e0;
-  stroke-dasharray: 2 6;
-}
-
 .grid {
   stroke: #efede8;
+  stroke-width: 1;
 }
 
-.scaleLabel {
+.tick {
   font: 400 10px var(--font-mono), monospace;
   fill: var(--muted-2);
   font-variant-numeric: tabular-nums;
 }
 
-.fillLabel {
+/* last-price tag: tracks the line end vertically */
+.tag {
+  transition: transform 0.3s linear;
+}
+
+.tagText {
   font: 500 11px var(--font-mono), monospace;
   font-variant-numeric: tabular-nums;
+  fill: #fff;
 }
 
-/* a new fill dot scales in from its own centre */
-.dot {
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: dotIn 0.3s cubic-bezier(0.2, 0.8, 0.3, 1);
+.guide {
+  stroke: var(--muted-2);
+  stroke-width: 1;
+  stroke-dasharray: 1 3;
+  stroke-linecap: round;
+  opacity: 0.7;
 }
 
-@keyframes dotIn {
-  from { transform: scale(0); }
-  to { transform: scale(1); }
-}
-
-/* soft pulse behind the end dot */
+/* soft halo behind the end dot (transform/opacity only) */
 .halo {
   transform-box: fill-box;
   transform-origin: center;
-  animation: halo 1.9s ease-out infinite;
+  animation: halo 2.2s ease-out infinite;
   pointer-events: none;
 }
 
 @keyframes halo {
-  0% { transform: scale(1); opacity: 0.32; }
-  70%, 100% { transform: scale(2.8); opacity: 0; }
+  0% { transform: scale(1); opacity: 0.3; }
+  70%, 100% { transform: scale(3); opacity: 0; }
+}
+
+/* hover crosshair */
+.cross {
+  stroke: var(--ink);
+  stroke-width: 1;
+  opacity: 0.18;
+}
+
+.crossDot {
+  fill: var(--bg);
+  stroke: var(--ink);
+  stroke-width: 1.6;
+}
+
+.tip {
+  fill: var(--bg);
+  stroke: var(--border-2);
+  stroke-width: 1;
+}
+
+.tipBlock {
+  font: 400 10px var(--font-mono), monospace;
+  font-variant-numeric: tabular-nums;
+  fill: var(--muted);
+}
+
+.tipPrice {
+  font: 500 14px var(--font-mono), monospace;
+  font-variant-numeric: tabular-nums;
+  fill: var(--ink);
+}
+
+.tipSide {
+  font: 500 11px var(--font-sans), sans-serif;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+.tipMeta {
+  font: 400 10px var(--font-mono), monospace;
+  font-variant-numeric: tabular-nums;
+  fill: var(--muted-2);
 }
 
 .fade {
@@ -82,15 +130,23 @@
   top: 0;
   bottom: 0;
   left: 0;
-  width: 80px;
+  width: 64px;
   background: linear-gradient(90deg, var(--panel), transparent);
   pointer-events: none;
 }
 
 .tl {
   position: absolute;
-  top: 16px;
-  left: 20px;
+  top: 18px;
+  left: 22px;
+  pointer-events: none;
+}
+
+.tr {
+  position: absolute;
+  top: 18px;
+  right: 22px;
+  text-align: right;
   pointer-events: none;
 }
 
@@ -99,43 +155,41 @@
   letter-spacing: -0.02em;
   color: var(--ink);
   font-variant-numeric: tabular-nums;
-  animation: priceIn 0.3s ease-out;
+  line-height: 1.1;
+  animation: fadeIn 0.3s ease-out;
 }
 
-@keyframes priceIn {
-  from { opacity: 0.4; }
+@keyframes fadeIn {
+  from { opacity: 0.45; }
   to { opacity: 1; }
 }
 
 .sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 6px;
   font: 400 12px var(--font-sans), sans-serif;
+  font-variant-numeric: tabular-nums;
   color: var(--muted);
-  margin-top: 4px;
+  white-space: nowrap;
 }
 
-.tr {
-  position: absolute;
-  top: 16px;
-  right: 20px;
-  text-align: right;
-  pointer-events: none;
+.tr .sub {
+  justify-content: flex-end;
 }
 
 .word {
   font: 300 30px var(--font-sans), sans-serif;
   letter-spacing: -0.02em;
+  line-height: 1.1;
   transition: color 0.3s;
   white-space: nowrap;
 }
 
-.subR {
-  composes: sub;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
 .empty {
-  aspect-ratio: 880 / 640;
+  position: absolute;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -143,29 +197,17 @@
   color: var(--muted-2);
 }
 
-.stance {
-  display: flex;
-  gap: 18px;
-  padding: 10px 4px 0;
-  font: 400 12.5px var(--font-sans), sans-serif;
-  font-variant-numeric: tabular-nums;
-  color: var(--ink);
-}
-
-.mono {
-  font: 500 12.5px var(--font-mono), monospace;
-}
-
-.spacer {
-  flex: 1;
-}
-
-.note {
-  color: var(--muted-2);
-  white-space: nowrap;
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .slide, .word { transition: none; }
-  .dot, .halo, .price { animation: none; }
+  .slide,
+  .tag,
+  .word {
+    transition: none;
+  }
+  .halo,
+  .price {
+    animation: none;
+  }
+  .halo {
+    opacity: 0;
+  }
 }
