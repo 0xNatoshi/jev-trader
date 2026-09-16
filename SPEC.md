@@ -4,7 +4,7 @@
 A live public dashboard showing an AI make a real trade decision on Monad every 300 ms block.
 
 ## What it is
-A single-page web app. A TypeSafe "Jev" model (a System One model: no text output, returns typed decisions with probabilities in ~100 ms) watches the MON-USDC order book on Kuru, Monad's on-chain exchange. Every block (300 ms) it decides buy, sell, or hold. Buys and sells are real orders from a real wallet, confirmed in the same block. The page shows this happening live.
+A single-page web app. A TypeSafe "Jev" model (a System One model: no text output, returns typed decisions with probabilities in ~100 ms) watches the MON-USDC order book on Kuru, Monad's on-chain exchange. Every block (300 ms) it answers one question: buy or sell. Every block is a real order from a real wallet, confirmed in the same block. The page shows this happening live.
 
 ## Who it is for
 1. Crypto Twitter, via a 20-second screen-recorded clip and a link. They have three seconds to get it.
@@ -21,7 +21,7 @@ Nothing on screen may compete with these two lines.
 - Everything shown is real and verifiable. Wallet address, tx hashes, block heights link to the explorer.
 - Legible in a compressed 1080p clip and at phone width. Big numbers, high contrast, no thin type.
 - Restraint. Dark trading-desk aesthetic. Green = buy, red = sell, neutral grey = hold. One accent color (Monad purple is acceptable). No gradients, no decorative charts.
-- Honest. Most blocks are holds. Losses are shown as plainly as gains. A "stand-in model" badge appears when real Jev is not connected.
+- Honest. Every block trades, so spread and gas bleed are visible. Losses are shown as plainly as gains. A "stand-in model" badge appears when real Jev is not connected.
 
 ## Layout (desktop 16:9 primary; mobile stacks vertically in the same order)
 
@@ -33,15 +33,14 @@ Nothing on screen may compete with these two lines.
 
 2. Hero: price chart
    - MON/USDC mid price, rolling window (default last 5 minutes ≈ 1,000 blocks; toggle 1m / 5m / 15m).
-   - A marker on every fill: green up-triangle for buy, red down-triangle for sell. Holds draw nothing.
+   - A marker on every fill: green up-triangle for buy, red down-triangle for sell. Nearly every block has one.
    - Current price in large type at the right edge of the line. Position size and side shown as a small pill (e.g. "long 12 MON").
 
 3. Decision panel (the flicker; this is the signature element)
    - Updates every block. Shows the decision for the current block.
-   - Three-way probability bar: buy / hold / sell with percentages. The chosen action is highlighted; the others dimmed.
-   - "Up in 10 blocks" probability as a single horizontal bar or dial with the number.
+   - Two-way probability bar: buy vs sell with percentages. The chosen side is highlighted. (This is also the "will price go up" number: buy probability = up probability.)
    - Decision latency in ms for this block (e.g. "94 ms").
-   - A tiny per-block tick strip along the bottom: the last 60 blocks as small squares, green/red/grey for buy/sell/hold, amber for "late" (model missed the block, treated as hold). Scrolls left as blocks arrive.
+   - A tiny per-block tick strip along the bottom: the last 60 blocks as small squares, green/red for buy/sell, amber for "late" (model missed the block, no trade). Scrolls left as blocks arrive.
 
 4. Counters row (six tiles, tabular numerals, all live)
    - Blocks seen
@@ -78,7 +77,7 @@ Nothing on screen may compete with these two lines.
 ## Live data shape (delivered over a server stream, one event per block)
 - block, timestamp
 - mid, bestBid, bestAsk, spread
-- decision: action (buy | sell | hold), probabilities {buy, sell, hold}, upIn10 (0–1), latencyMs, late (bool)
+- decision: action (buy | sell; hold only when late), probabilities {buy, sell, hold}, upIn10 (= buy probability), latencyMs, late (bool)
 - fill (optional): side, size, price, txHash, gasMon
 - position: side, size, entryPrice, unrealizedMon
 - totals: blocks, decisions, trades, jevUsd, gasMon, gasUsd, pnlMon, pnlPct, lateBlocks
@@ -93,7 +92,7 @@ Nothing on screen may compete with these two lines.
 ## Technical constraints the design must respect
 - 3.3 updates per second, indefinitely. Animations must be cheap: transforms and opacity only, no layout thrash.
 - Constantly changing numbers need tabular (fixed-width) numerals so tiles do not jitter.
-- Must look right when the model holds for 200 consecutive blocks (the common case). The flicker of probabilities carries the motion when there are no fills.
+- Must stay legible with a fill on nearly every block: markers must not smear into a solid band at 3 per second (thin markers, or aggregate when zoomed out).
 - Screen-recordable: no elements that only make sense with hover.
 - Works at 390 px wide.
 

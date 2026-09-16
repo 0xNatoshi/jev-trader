@@ -2,6 +2,7 @@ import { experimental_evaluate } from "ai";
 import { typeSafeAi } from "@ai-sdk/typesafe-ai";
 import { config } from "./config";
 
+/** Models answer buy or sell. `hold` only appears on late blocks (no decision was made). */
 export type Action = "buy" | "sell" | "hold";
 
 /** What the model sees. Compact, relative, human-readable. */
@@ -32,23 +33,18 @@ export interface Model {
 }
 
 const QUESTIONS = {
-  action: {
+  direction: {
     type: "choice",
     instructions: {
-      question: "What should the trader do this block?",
-      goal: "Trade MON-USDC on Kuru every 300ms block. Capture short-term moves; respect `allowed`.",
-      timing: "A trade executes as an immediate-or-cancel market order in the next block.",
-      rules: "If `allowed.buy` is false, do not choose buy. If `allowed.sell` is false, do not choose sell.",
+      question: "Buy or sell MON this block?",
+      goal: "Trade MON-USDC on Kuru every 300ms block. Pick the side more likely to profit over the next ~10 blocks (~3 seconds).",
+      timing: "The order executes as an immediate-or-cancel market order in the next block. There is no hold; every block trades.",
+      inputs: "Use `returnsBps` for momentum, `bookImbalance` for pressure (positive = more bids), `recentMids` for the recent path, and `position` for exposure. If `allowed.buy` is false the trade will be a sell regardless, and vice versa.",
     },
     criteria: {
-      buy: "Buy MON now. Only when momentum, book imbalance, or mean reversion favor a rise within ~10 blocks and `allowed.buy` is true.",
-      sell: "Sell MON now. Only when a fall within ~10 blocks looks likely, or to take profit on an open long, and `allowed.sell` is true.",
-      hold: "Do nothing this block. The default when the picture is unclear or the spread would eat the edge.",
+      buy: "Buy MON now: price more likely to rise over the next ~10 blocks.",
+      sell: "Sell MON now: price more likely to fall over the next ~10 blocks.",
     },
-  },
-  up: {
-    type: "boolean",
-    instructions: "Will the mid price be higher than `mid` ten blocks (~3 seconds) from now?",
   },
 } as const;
 
@@ -60,19 +56,20 @@ export class JevModel implements Model {
   async decide(state: TradeState): Promise<Decision> {
     const t0 = performance.now();
     const r = await experimental_evaluate({ model: this.model, state: state as any, questions: QUESTIONS, maxRetries: 0 });
-    const a = r.answers.action;
-    const p = a.probabilities ?? { buy: 0, sell: 0, hold: 0, [a.choice]: 1 };
+    const a = r.answers.direction;
+    const p = a.probabilities ?? { buy: 0, sell: 0, [a.choice]: 1 };
+    const buy = p.buy ?? 0, sell = p.sell ?? 0;
     return {
       action: a.choice as Action,
-      probabilities: { buy: p.buy ?? 0, sell: p.sell ?? 0, hold: p.hold ?? 0 },
-      upIn10: r.answers.up.probability,
+      probabilities: { buy, sell, hold: 0 },
+      upIn10: buy,
       latencyMs: performance.now() - t0,
       inputTokens: r.usage?.inputTokens ?? 0,
     };
   }
 }
 
-/** Deterministic stand-in: momentum + imbalance through a softmax, hold-biased. */
+/** Deterministic stand-in: momentum + imbalance + mean reversion toward flat. */
 export class MockModel implements Model {
   readonly name = "mock";
 
@@ -80,18 +77,13 @@ export class MockModel implements Model {
     const t0 = performance.now();
     // momentum + book imbalance + noise, pulled back toward flat so it trades both ways
     const signal = state.returnsBps.last5 / 4 + state.bookImbalance * 2 + this.noise(state.block) - (state.position.mon / config.maxPositionMon) * 2.5;
-    const logits = { buy: signal, sell: -signal, hold: 2.2 };
-    const z = Object.values(logits).reduce((s, v) => s + Math.exp(v), 0);
-    const probabilities = {
-      buy: Math.exp(logits.buy) / z,
-      sell: Math.exp(logits.sell) / z,
-      hold: Math.exp(logits.hold) / z,
-    };
-    const action = (Object.keys(probabilities) as Action[]).reduce((a, b) => (probabilities[a] >= probabilities[b] ? a : b));
+    const buy = 1 / (1 + Math.exp(-signal)); // binary softmax
+    const probabilities = { buy, sell: 1 - buy, hold: 0 };
+    const action: Action = buy >= 0.5 ? "buy" : "sell";
     await Bun.sleep(80); // stand in for inference time so the pipeline behaves like production
     return {
       action, probabilities,
-      upIn10: 1 / (1 + Math.exp(-signal / 2)),
+      upIn10: buy,
       latencyMs: performance.now() - t0,
       inputTokens: Math.round(JSON.stringify(state).length / 4),
     };

@@ -30,7 +30,7 @@ export interface Totals {
   pnlPct: number;
 }
 
-/** One decision per block, one request in flight, hold when late. */
+/** One decision per block, one request in flight. Every decided block trades; late blocks are recorded as holds. */
 export class Trader {
   readonly history: BlockEvent[] = [];
   private mids: number[] = [];
@@ -59,14 +59,16 @@ export class Trader {
       if (this.mids.length > 100) this.mids.shift();
 
       const decision = await this.model.decide(this.buildState(block, book));
-      if (decision.action !== "hold" && !this.allowed(decision.action)) decision.action = "hold"; // position limit; probabilities still show intent
+      let side: "buy" | "sell" = decision.action === "sell" ? "sell" : "buy";
+      if (!this.allowed(side)) side = side === "buy" ? "sell" : "buy"; // position cap flips the side; probabilities still show intent
+      decision.action = side;
       this.totals.decisions++;
       this.totals.jevUsd += (decision.inputTokens / 1e6) * config.jevUsdPerMTok;
       this.lastDecision = { action: decision.action, block };
 
       let fill: Fill | null = null;
-      if (decision.action !== "hold") {
-        fill = await this.market.execute(decision.action, config.tradeSizeMon, book);
+      {
+        fill = await this.market.execute(side, config.tradeSizeMon, book);
         if (fill.size > 0) this.applyFill(fill);
       }
       if (block % 200 === 0) this.market.refreshGasPrice().catch(() => {});
