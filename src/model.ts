@@ -9,11 +9,20 @@ export type Action = "buy" | "sell" | "hold";
 export interface TradeState {
   market: "MON-USDC";
   block: number;
+  horizonBlocks: number; // the question is about the move over this many blocks
+  blockMs: number;
   mid: number;
   spreadBps: number;
-  bookImbalance: number; // -1 (all asks) .. 1 (all bids)
-  returnsBps: { last1: number; last5: number; last20: number };
-  recentMids: string; // oldest..newest, space separated
+  bookImbalance: number; // -1 (all asks) .. 1 (all bids), within 1% of mid
+  /** Cumulative resting MON within 10/25/50 bps of mid, per side. */
+  depth: { [band: string]: { bid: number; ask: number } };
+  /** Top 5 levels each side, best first, as "price x size". */
+  book: { bids: string[]; asks: string[] };
+  returnsBps: { last1: number; last5: number; last20: number; last100: number };
+  recentMids: string; // oldest..newest, sampled every 5 blocks over the horizon, space separated
+  /** Taker prints over the last `horizonBlocks`. cvdMon = taker buy volume - taker sell volume. */
+  trades: { count: number; buyMon: number; sellMon: number; cvdMon: number; vwap: number | null; lastPrice: number | null; lastSide: "buy" | "sell" | null };
+  recentTrades: string[]; // newest last, "block side size @ price"
   position: { mon: number; entryPrice: number | null; unrealizedUsd: number };
   lastDecision: { action: Action; blocksAgo: number } | null;
   allowed: { buy: boolean; sell: boolean };
@@ -36,14 +45,14 @@ const QUESTIONS = {
   direction: {
     type: "choice",
     instructions: {
-      question: "Buy or sell MON this block?",
-      goal: "Trade MON-USDC on Kuru every 300ms block. Pick the side more likely to profit over the next ~10 blocks (~3 seconds).",
-      timing: "The order executes as an immediate-or-cancel market order in the next block. There is no hold; every block trades.",
-      inputs: "Use `returnsBps` for momentum, `bookImbalance` for pressure (positive = more bids), `recentMids` for the recent path, and `position` for exposure. If `allowed.buy` is false the trade will be a sell regardless, and vice versa.",
+      question: "Will MON be higher or lower than the current mid after `horizonBlocks` more blocks?",
+      goal: "Trade MON-USDC on Kuru. Blocks are ~300ms; `horizonBlocks` (~30 s) is the horizon. A decision is made every few blocks and held until the next one. The trade crosses the spread (`spreadBps`), so the move must beat that cost.",
+      timing: "The order executes as an immediate-or-cancel market order in the next block.",
+      inputs: "Taker flow is the strongest signal: `trades.cvdMon` (taker buys minus taker sells over the horizon), `trades.lastSide` and `recentTrades` show who is hitting the book. `depth` and `book` show resting liquidity per side at several distances from mid; thin depth on one side means price moves easily that way. `returnsBps` and `recentMids` show the path over the horizon. `position` is current exposure. If `allowed.buy` is false the trade will be a sell regardless, and vice versa.",
     },
     criteria: {
-      buy: "Buy MON now: price more likely to rise over the next ~10 blocks.",
-      sell: "Sell MON now: price more likely to fall over the next ~10 blocks.",
+      buy: "Buy MON now: mid more likely to be higher after `horizonBlocks` blocks, by more than the spread.",
+      sell: "Sell MON now: mid more likely to be lower after `horizonBlocks` blocks, by more than the spread.",
     },
   },
 } as const;
@@ -76,7 +85,8 @@ export class MockModel implements Model {
   async decide(state: TradeState): Promise<Decision> {
     const t0 = performance.now();
     // momentum + book imbalance + noise, pulled back toward flat so it trades both ways
-    const signal = state.returnsBps.last5 / 4 + state.bookImbalance * 2 + this.noise(state.block) - (state.position.mon / config.maxPositionMon) * 2.5;
+    const flow = state.trades.buyMon + state.trades.sellMon ? state.trades.cvdMon / (state.trades.buyMon + state.trades.sellMon) : 0;
+    const signal = state.returnsBps.last20 / 8 + state.bookImbalance * 1.5 + flow * 2 + this.noise(state.block) - (state.position.mon / config.maxPositionMon) * 2.5;
     const buy = 1 / (1 + Math.exp(-signal)); // binary softmax
     const probabilities = { buy, sell: 1 - buy, hold: 0 };
     const action: Action = buy >= 0.5 ? "buy" : "sell";

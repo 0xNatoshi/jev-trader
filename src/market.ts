@@ -13,6 +13,10 @@ export interface Book {
   spreadBps: number;
   /** (bidDepth - askDepth) / (bidDepth + askDepth) within 1% of mid. -1..1 */
   imbalance: number;
+  /** Top 5 levels each side, best first: [price, size]. */
+  levels: { bids: [number, number][]; asks: [number, number][] };
+  /** Cumulative MON depth within N bps of mid, per side. */
+  depthBps: { [band: string]: { bid: number; ask: number } };
 }
 
 export interface Fill {

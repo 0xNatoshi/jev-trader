@@ -187,6 +187,32 @@
   white-space: nowrap;
 }
 
+/* one-shot trade cues: every animated node is keyed by block, so it plays once on mount */
+.ripple, .beadPop, .cellPop, .cellGlow {
+  transform-box: fill-box;
+  transform-origin: center;
+  pointer-events: none;
+}
+
+.ripple { vector-effect: non-scaling-stroke; animation: ripple 0.7s ease-out forwards; }
+@keyframes ripple { from { transform: scale(1); opacity: 0.9; } to { transform: scale(5.3); opacity: 0; } }
+
+.beadPop { animation: beadPop 0.3s ease-out; }
+@keyframes beadPop { from { transform: scale(1.8); } to { transform: scale(1); } }
+
+/* riser: joins the new strip cell to its bead on the line */
+.riser { stroke-width: 1; pointer-events: none; animation: riser 0.9s ease-out forwards; }
+@keyframes riser { from { opacity: 0.35; } to { opacity: 0; } }
+
+.cellPop { animation: cellPop 0.25s ease-out; }
+@keyframes cellPop { from { transform: scale(1.6); } to { transform: scale(1); } }
+
+.cellGlow { animation: cellGlow 0.6s ease-out forwards; }
+@keyframes cellGlow { from { transform: scale(1.4); opacity: 0.35; } to { transform: scale(2.3); opacity: 0; } }
+
+.wordPop { transform-origin: right center; animation: wordPop 0.25s ease-out; }
+@keyframes wordPop { from { transform: scale(1.06); } to { transform: scale(1); } }
+
 .empty {
   position: absolute;
   inset: 0;
@@ -204,10 +230,19 @@
     transition: none;
   }
   .halo,
-  .price {
+  .price,
+  .ripple,
+  .beadPop,
+  .riser,
+  .cellPop,
+  .cellGlow,
+  .wordPop {
     animation: none;
   }
-  .halo {
+  .halo,
+  .ripple,
+  .riser,
+  .cellGlow {
     opacity: 0;
   }
 }

@@ -3,6 +3,7 @@ import { startBlockFeed } from "./chain";
 import { Market } from "./market";
 import { createModel } from "./model";
 import { Trader } from "./trader";
+import { log10 } from "./book";
 import { startServer } from "./server";
 
 const market = new Market();
@@ -18,7 +19,7 @@ const trader = new Trader(
   model,
   (e, t) => {
     server.broadcast(e);
-    if (e.decision && !e.decision.late) {
+    if (e.decision && !e.decision.late && e.decision.action !== "hold") {
       const p = e.decision.probabilities;
       const f = e.fill;
       const fill = !f ? "" : f.confirmed
@@ -32,6 +33,7 @@ const trader = new Trader(
     console.log(`#${block} CONFIRMED ${fill.side} ${fill.size} @ ${fill.price.toFixed(6)} gas ${fill.gasMon.toFixed(6)} MON ${fill.txHash}`);
   },
 );
+trader.attachTradeFeed(log10(market.params.sizePrecision));
 
-console.log(`jev-trader · model=${model.name} · ${config.dryRun ? "DRY RUN" : `wallet ${market.address}`} · market ${config.market} · read ${config.readRpcUrl} · :${config.port}`);
+console.log(`jev-trader · model=${model.name} · decide every ${config.decideEveryBlocks} blocks · horizon ${config.horizonBlocks} blocks · ${config.dryRun ? "DRY RUN" : `wallet ${market.address}`} · market ${config.market} · read ${config.readRpcUrl} · :${config.port}`);
 startBlockFeed((block) => trader.onBlock(block));

@@ -144,6 +144,8 @@ export default function FlowChart({
       area,
       cells,
       beads,
+      hot: beads.length ? beads[beads.length - 1] : null,
+      hotCell: cells[cells.length - 1],
       ticks,
       byBlock,
       fx,
@@ -190,6 +192,8 @@ export default function FlowChart({
         : act === "late"
           ? "var(--late-ink)"
           : "var(--ink)";
+  const wordRef = useRef<{ act: string; block: number }>({ act, block: shown?.block ?? 0 });
+  if (wordRef.current.act !== act) wordRef.current = { act, block: shown?.block ?? 0 };
   const conf = d ? Math.max(d.probabilities.buy, d.probabilities.sell, d.probabilities.hold) : 0;
   const pos = shown?.position;
   const stance =
@@ -232,11 +236,51 @@ export default function FlowChart({
                 <path d={model.area} fill={`url(#g${gid})`} />
                 <path className={styles.line} d={model.line} />
                 {model.beads.map((b) => (
-                  <circle key={b.key} cx={b.x} cy={b.y} r="3" fill={b.fill} opacity="0.7" />
+                  <circle
+                    key={b.key}
+                    className={b.key === model.hot?.key ? styles.beadPop : undefined}
+                    cx={b.x}
+                    cy={b.y}
+                    r="3"
+                    fill={b.fill}
+                    opacity="0.7"
+                  />
                 ))}
-                {model.cells.map((c) => (
+                {model.hot ? (
+                  <g key={model.hot.key}>
+                    <line
+                      className={styles.riser}
+                      x1={model.hot.x}
+                      x2={model.hot.x}
+                      y1={h - 40}
+                      y2={model.hot.y}
+                      stroke={model.hot.fill}
+                    />
+                    <circle
+                      className={styles.ripple}
+                      cx={model.hot.x}
+                      cy={model.hot.y}
+                      r="3"
+                      fill="none"
+                      stroke={model.hot.fill}
+                      strokeWidth="2"
+                    />
+                  </g>
+                ) : null}
+                <rect
+                  key={`glow${model.hotCell.key}`}
+                  className={styles.cellGlow}
+                  x={model.hotCell.x}
+                  y={h - 40}
+                  width={CELL_W}
+                  height={CELL_H}
+                  rx="3"
+                  fill={model.hotCell.fill}
+                />
+                {model.cells.map((c, i) => (
                   <rect
                     key={c.key}
+                    className={i === model.cells.length - 1 ? styles.cellPop : undefined}
                     x={c.x}
                     y={h - 40}
                     width={CELL_W}
@@ -295,7 +339,11 @@ export default function FlowChart({
             </div>
 
             <div className={styles.tr}>
-              <div className={styles.word} style={{ color: wordColor }}>
+              <div
+                className={`${styles.word} ${styles.wordPop}`}
+                key={`${wordRef.current.block}-${act}`}
+                style={{ color: wordColor }}
+              >
                 {word}
               </div>
               <div className={styles.sub}>

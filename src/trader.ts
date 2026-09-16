@@ -2,6 +2,7 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { config } from "./config";
 import { Market, type Book, type Fill } from "./market";
 import type { Action, Decision, Model, TradeState } from "./model";
+import { TradeFeed } from "./trades";
 
 export interface BlockEvent {
   block: number;
@@ -34,7 +35,8 @@ export interface Totals {
 }
 
 /**
- * One decision per block, one request in flight. Every decided block trades; late blocks are holds.
+ * One decision every `config.decideEveryBlocks` blocks, one request in flight. Decided blocks trade; every
+ * other block reads the book, polls trade prints, and emits a hold. Late blocks are holds too.
  * Live sends are fire-and-forget: the block event carries the intent, and the fill is applied to the
  * position when its receipt turns up on a later block (`onFill`). Dry runs apply fills immediately.
  */
@@ -43,7 +45,8 @@ export class Trader {
   private mids: number[] = [];
   private busy = false;
   private lastBook: Book | null = null;
-  private lastDecision: { action: Action; block: number } | null = null;
+  private lastDecision: { action: Action; block: number; upIn10: number } | null = null;
+  private trades: TradeFeed | null = null;
   private position = { mon: 0, costUsd: 0 }; // signed inventory and its cost basis
   private inFlightMon = 0; // signed size of live sends not yet confirmed; counts toward the position cap
   private totals: Totals = { blocks: 0, decisions: 0, trades: 0, lateBlocks: 0, jevUsd: 0, gasMon: 0, gasUsd: 0, realizedUsd: 0, pnlUsd: 0, pnlMon: 0, pnlPct: 0 };
@@ -55,6 +58,11 @@ export class Trader {
     private onFill: (block: number, fill: Fill) => void = () => {},
   ) {
     mkdirSync("data", { recursive: true });
+  }
+
+  /** Call once the market params are known. Without it `trades` in the state is all zeros. */
+  attachTradeFeed(sizeDec: number) {
+    this.trades = new TradeFeed({ market: config.market, url: config.readRpcUrl, sizeDec });
   }
 
   async onBlock(block: number) {
@@ -73,15 +81,21 @@ export class Trader {
       const readMs = performance.now() - t0;
       this.lastBook = book;
       this.mids.push(book.mid);
-      if (this.mids.length > 100) this.mids.shift();
+      if (this.mids.length > 400) this.mids.shift();
+      this.trades?.poll(block); // off the hot path: eth_getLogs for prints since the last poll
 
+      const due = !this.lastDecision || block - this.lastDecision.block >= config.decideEveryBlocks;
+      if (!due) {
+        this.emit(block, book, null, null, false, { readMs: Math.round(readMs), loopMs: Math.round(performance.now() - t0) });
+        return;
+      }
       const decision = await this.model.decide(this.buildState(block, book));
       let side: "buy" | "sell" = decision.action === "sell" ? "sell" : "buy";
       if (!this.allowed(side)) side = side === "buy" ? "sell" : "buy"; // position cap flips the side; probabilities still show intent
       decision.action = side;
       this.totals.decisions++;
       this.totals.jevUsd += (decision.inputTokens / 1e6) * config.jevUsdPerMTok;
-      this.lastDecision = { action: decision.action, block };
+      this.lastDecision = { action: decision.action, block, upIn10: decision.upIn10 };
 
       const fill = await this.market.send(block, side, config.tradeSizeMon, book);
       if (fill.confirmed) this.applyFill(fill); // dry run only; live fills land in confirmPending
@@ -111,16 +125,27 @@ export class Trader {
   }
 
   private buildState(block: number, book: Book): TradeState {
-    const m = this.mids, n = m.length;
+    const m = this.mids, n = m.length, H = config.horizonBlocks;
     const ret = (k: number) => (n > k ? ((m[n - 1]! - m[n - 1 - k]!) / m[n - 1 - k]!) * 10_000 : 0);
+    const sampled = m.slice(-H).filter((_, i, a) => (a.length - 1 - i) % 5 === 0); // every 5th block, newest included
+    const lvl = (l: [number, number]) => `${l[0].toFixed(6)} x ${round(l[1], 1)}`;
+    const empty = { count: 0, buyMon: 0, sellMon: 0, cvdMon: 0, vwap: null, lastPrice: null, lastSide: null };
+    const depth: TradeState["depth"] = {};
+    for (const [k, v] of Object.entries(book.depthBps)) depth[k + "bps"] = { bid: round(v.bid, 1), ask: round(v.ask, 1) };
     return {
       market: "MON-USDC",
       block,
+      horizonBlocks: H,
+      blockMs: 300,
       mid: book.mid,
       spreadBps: round(book.spreadBps, 2),
       bookImbalance: round(book.imbalance, 3),
-      returnsBps: { last1: round(ret(1), 2), last5: round(ret(5), 2), last20: round(ret(20), 2) },
-      recentMids: m.slice(-20).map((x) => x.toFixed(6)).join(" "),
+      depth,
+      book: { bids: book.levels.bids.map(lvl), asks: book.levels.asks.map(lvl) },
+      returnsBps: { last1: round(ret(1), 2), last5: round(ret(5), 2), last20: round(ret(20), 2), last100: round(ret(100), 2) },
+      recentMids: sampled.map((x) => x.toFixed(6)).join(" "),
+      trades: this.trades ? this.trades.summary(H, block) : empty,
+      recentTrades: (this.trades?.recent(10) ?? []).map((t) => `${t.block} ${t.side} ${round(t.size, 1)} @ ${t.price.toFixed(6)}`),
       position: { mon: this.position.mon, entryPrice: this.entryPrice(), unrealizedUsd: round(this.unrealizedUsd(book.mid), 4) },
       lastDecision: this.lastDecision ? { action: this.lastDecision.action, blocksAgo: block - this.lastDecision.block } : null,
       allowed: { buy: this.allowed("buy"), sell: this.allowed("sell") },
@@ -163,7 +188,9 @@ export class Trader {
       block, ts: Date.now(), mid: book.mid, bestBid: book.bid, bestAsk: book.ask, spreadBps: round(book.spreadBps, 2),
       decision: late
         ? { action: "hold", probabilities: { buy: 0, sell: 0, hold: 1 }, upIn10: 0.5, latencyMs: 0, late: true }
-        : decision && { action: decision.action, probabilities: decision.probabilities, upIn10: decision.upIn10, latencyMs: Math.round(decision.latencyMs), late: false },
+        : decision
+          ? { action: decision.action, probabilities: decision.probabilities, upIn10: decision.upIn10, latencyMs: Math.round(decision.latencyMs), late: false }
+          : { action: "hold", probabilities: { buy: 0, sell: 0, hold: 1 }, upIn10: this.lastDecision?.upIn10 ?? 0.5, latencyMs: 0, late: false },
       fill,
       position: {
         side: this.position.mon > 0 ? "long" : this.position.mon < 0 ? "short" : "flat",
