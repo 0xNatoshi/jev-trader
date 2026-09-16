@@ -17,7 +17,7 @@ export async function rpc<T = unknown>(method: string, params: unknown[] = []): 
  * Primary: WebSocket newHeads (fires when a block is Proposed).
  * Backstop: HTTP polling, so the loop keeps running if the socket drops or is unavailable.
  */
-export function startBlockFeed(onBlock: (block: number) => void, pollMs = 250) {
+export function startBlockFeed(onBlock: (block: number) => void, pollMs = 150) {
   let last = 0;
   const emit = (block: number) => {
     if (block <= last) return;
