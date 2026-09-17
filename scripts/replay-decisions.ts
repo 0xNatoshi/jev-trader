@@ -84,7 +84,7 @@ for (const H of HORIZONS) {
     if (b.length < 5) continue;
     const bu = b.filter((s) => s.fwd > 0).length / b.length;
     const bm = b.reduce((s, x) => s + x.fwd, 0) / b.length;
-    console.log(`   p∈[${lo.toFixed(2)},${hi.toFixed(2)}) n=${String(b.length).padStart(5)} | %up ${(bu * 100).toFixed(0).padStart(3)} | move ${bm.toFixed(2).padStart(6)} bps`);
+    console.log(`   p∈[${lo.toFixed(2)},${hi.toFixed(2)}) n=${String(b.length).padStart(5)} | %up ${(bu * 100).toFixed(0).padStart(3)} | move ${bm.toFixed(2).padStart(6)} bps | excès ${(bm - meanFwd).toFixed(2).padStart(6)} bps`);
   }
 
   console.log(`   sweep seuil (coût = spread×${COST_MULT} par aller-retour croisé):`);
