@@ -45,6 +45,13 @@ export const config = {
   /** Toxicity: one-sided taker flow over a rolling window. VPIN-style volume buckets
    *  saturate on this market (a single print is larger than any sane bucket), so the
    *  measure is net/gross taker volume over the last `flowWindowBlocks`. */
+  /** Regime machine: repricing jumps, liquidity sweeps, and the cool-off after them. */
+  regimeJumpBps: Number(env("REGIME_JUMP_BPS", "15")),
+  regimeJumpWindowBlocks: Number(env("REGIME_JUMP_WINDOW_BLOCKS", "20")),
+  regimeSweepRatio: Number(env("REGIME_SWEEP_RATIO", "5")),
+  regimeCooloffBlocks: Number(env("REGIME_COOLOFF_BLOCKS", "60")),
+  regimeStressSpreadMult: Number(env("REGIME_STRESS_SPREAD_MULT", "2.5")),
+  regimeCooloffSpreadMult: Number(env("REGIME_COOLOFF_SPREAD_MULT", "1.6")),
   /** Quoting: reservation price + inventory skew + volatility-scaled half-spread. */
   mmGamma: Number(env("MM_GAMMA", "0.6")),
   mmLiqHalfSpreadBps: Number(env("MM_LIQ_HALF_SPREAD_BPS", "1.5")),

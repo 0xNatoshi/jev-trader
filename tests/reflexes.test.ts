@@ -4,7 +4,7 @@ import { checkReflexes, defaultReflexes, reflexesFor, type ReflexFacts } from ".
 const base: ReflexFacts = {
   killSwitchActive: false, sessionPnlUsd: 0, gasGwei: 102, liquidityMon: 10_000,
   spreadBps: 3, score: 60, alreadyQuotingSide: false, exposureMon: 200, fundsOk: true, unresolvedSends: 0,
-  toxicity: null, flowSigned: null, intendedSide: null,
+  toxicity: null, flowSigned: null, intendedSide: null, regimeAcute: false,
 };
 
 test("a healthy block passes both passes", () => {
@@ -26,6 +26,11 @@ test("market quality gates: thin book, wide spread, low score", () => {
   expect(checkReflexes({ ...base, liquidityMon: 10 }, "pre")?.name).toBe("min_liquidity");
   expect(checkReflexes({ ...base, spreadBps: 40 }, "pre")?.name).toBe("max_spread");
   expect(checkReflexes({ ...base, score: 5 }, "pre")?.name).toBe("low_score");
+});
+
+test("a repricing jump or a sweep pauses entries", () => {
+  expect(checkReflexes({ ...base, regimeAcute: true }, "pre")?.name).toBe("regime_pause");
+  expect(checkReflexes({ ...base, regimeAcute: false }, "pre")).toBeNull();
 });
 
 test("a screaming one-way tape pauses every quote, before the model", () => {

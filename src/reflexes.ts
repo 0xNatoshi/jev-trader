@@ -30,6 +30,8 @@ export interface ReflexFacts {
   fundsOk: boolean;
   /** Sends the chain has not explained yet. Above zero, new entries stay locked. */
   unresolvedSends: number;
+  /** True while a repricing jump or a liquidity sweep is in progress. */
+  regimeAcute: boolean;
   /** Toxicity: absolute one-sidedness of the flow over the window, null when too thin. */
   toxicity: number | null;
   /** Signed flow in [-1, 1]: positive = taker buying dominates. */
@@ -53,6 +55,8 @@ export function defaultReflexes(cfg = config): Reflex[] {
     { name: "min_liquidity", note: `book thinner than ${cfg.minLiquidityMon} MON at 25 bps`, check: (f) => f.liquidityMon < cfg.minLiquidityMon },
     { name: "max_spread", note: `spread above ${cfg.maxSpreadBps} bps`, check: (f) => f.spreadBps > cfg.maxSpreadBps },
     { name: "low_score", note: `book score below ${cfg.minScore}`, check: (f) => f.score < cfg.minScore },
+    // A repricing jump or a sweep means the book we quoted is gone.
+    { name: "regime_pause", note: "jump or sweep in progress", check: (f) => f.regimeAcute },
     // Circuit breaker: the tape is screaming one way (Kalshi: one-sided flow is what
     // predicts maker losses). Everything pauses.
     { name: "stressed_flow", note: `flow one-sided beyond ${cfg.maxToxicityExtreme}`, check: (f) => f.toxicity !== null && f.toxicity >= cfg.maxToxicityExtreme },
@@ -66,7 +70,7 @@ export function defaultReflexes(cfg = config): Reflex[] {
 }
 
 /** Market-wide checks: safe to run before the model, no intended side needed. */
-const PRE_MODEL = new Set(["kill_switch", "recovery_pending", "daily_loss", "gas_cap", "min_liquidity", "max_spread", "low_score", "stressed_flow"]);
+const PRE_MODEL = new Set(["kill_switch", "recovery_pending", "daily_loss", "gas_cap", "min_liquidity", "max_spread", "low_score", "regime_pause", "stressed_flow"]);
 
 /**
  * Which reflexes apply in each phase. The pre-model pass never guesses a side, so

@@ -69,6 +69,7 @@ export function dashboardHtml(): string {
   <span class="tag" id="reflex">reflex</span>
   <span class="tag" id="scoretag">score</span>
   <span class="tag" id="toxtag">tox</span>
+  <span class="tag" id="regimetag">regime</span>
   <span class="dim" id="clock" style="margin-left:auto"></span>
 </header>
 <main>
@@ -137,6 +138,10 @@ export function dashboardHtml(): string {
     var toxEl = document.getElementById('toxtag');
     toxEl.textContent = 'tox ' + (signed === null || signed === undefined ? '-' : (signed >= 0 ? '+' : '') + Number(signed).toFixed(2));
     toxEl.className = 'tag' + (signed !== null && signed !== undefined && Math.abs(signed) >= 0.7 ? ' down' : '');
+    var reg = state.latest && state.latest.regime ? state.latest.regime.state : null;
+    var regEl = document.getElementById('regimetag');
+    regEl.textContent = 'regime ' + (reg || '-');
+    regEl.className = 'tag' + (reg === 'jump' || reg === 'sweep' ? ' down' : reg === 'cooloff' ? ' warn' : '');
     document.getElementById('clock').textContent = new Date().toLocaleTimeString();
     document.getElementById('uptime').textContent = dur(Date.now() - state.meta.startedAt);
   }
@@ -286,7 +291,8 @@ export function dashboardHtml(): string {
       ['reservation', p.r ? Number(p.r).toFixed(6) : '-'],
       ['vol horizon', num(p.volBps, 2) + ' bps'],
       ['half-spread', num(p.deltaBps, 2) + ' bps'],
-      ['skew', (p.skewBps >= 0 ? '+' : '') + num(p.skewBps, 2) + ' bps', p.skewBps >= 0 ? 'up' : 'down']
+      ['skew', (p.skewBps >= 0 ? '+' : '') + num(p.skewBps, 2) + ' bps', p.skewBps >= 0 ? 'up' : 'down'],
+      ['regime', state.latest.regime ? state.latest.regime.state : '-', state.latest.regime && (state.latest.regime.state === 'jump' || state.latest.regime.state === 'sweep') ? 'down' : '']
     ]);
   }
 

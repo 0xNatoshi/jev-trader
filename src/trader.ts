@@ -8,6 +8,7 @@ import { marketScore, type ScorePart } from "./score";
 import { FlowToxicity } from "./toxicity";
 import { horizonVolBps, quotePlan, type QuotePlan } from "./quoting";
 import { queueAheadAt, simulateFills, type SimOrder } from "./fills";
+import { RegimeMachine } from "./regime";
 import { Store, type Impulse, type Node, type Verdict } from "./store";
 import { TradeFeed, type MakerFill, type TradePrint } from "./trades";
 
@@ -37,6 +38,8 @@ export interface BlockEvent {
   flowSigned: number | null;
   /** Quoting ladder computed this block: reservation price, skew and half-spread (bps). */
   plan: { r: number; skewBps: number; deltaBps: number; volBps: number } | null;
+  /** Regime: calm, jump, sweep, or the cool-off after one. */
+  regime: { state: string; detail: string } | null;
   /** Our size known to be resting on the book after this block's order. */
   resting: { bidMon: number; askMon: number };
   position: { side: "long" | "short" | "flat"; size: number; entryPrice: number | null; unrealizedUsd: number; unrealizedMon: number };
@@ -137,6 +140,15 @@ export class Trader {
   readonly flow = new FlowToxicity(config.flowWindowBlocks, config.flowMinVolumeMon);
   /** Last ladder computed: reservation price, skew, volatility-scaled half-spread. */
   plan: QuotePlan | null = null;
+  /** Is this a normal tape, a repricing jump, a sweep, or the cool-off after one? */
+  readonly regime = new RegimeMachine(
+    {
+      jumpBps: config.regimeJumpBps, jumpWindowBlocks: config.regimeJumpWindowBlocks,
+      sweepRatio: config.regimeSweepRatio, cooloffBlocks: config.regimeCooloffBlocks,
+      stressSpreadMult: config.regimeStressSpreadMult, cooloffSpreadMult: config.regimeCooloffSpreadMult,
+    },
+    config.tradeSizeMon,
+  );
   /** Impulses each reflex stopped this session, by reflex name. */
   readonly reflexHits: Record<string, number> = {};
   /** Sends the chain has not explained yet. Above zero, the recovery reflex locks new entries. */
@@ -182,6 +194,8 @@ export class Trader {
       this.markCarry(book.mid);
       // The ladder is computed every block, so the console always shows where we price.
       plan = this.currentPlan(book);
+      // Regimes: a repricing jump or a sweep pauses us, the cool-off widens us.
+      this.regime.onBlock(block, this.mids);
       if (this.mids.length > 400) this.mids.shift();
       this.trades?.poll(block).then(() => this.harvest()); // off the hot path: eth_getLogs for prints (and our fills) since the last poll
 
@@ -410,6 +424,7 @@ export class Trader {
     if (!this.trades) return;
     const prints = this.trades.drainPrints();
     for (const p of prints) this.flow.add({ block: p.block, sizeMon: p.size, side: p.side }); // toxicity eats the same tape the fills are simulated from
+    this.regime.onPrints(this.lastBook?.block ?? 0, prints);
     const fills: Fill[] = this.market.wallet ? this.liveFills(this.trades.drainFills()) : this.simFills(prints);
     if (!fills.length) return;
     const byBlock = new Map<number, Fill[]>();
@@ -636,6 +651,7 @@ export class Trader {
         gamma: config.mmGamma, horizonBlocks: config.horizonBlocks,
         liqHalfSpreadBps: config.mmLiqHalfSpreadBps, minHalfSpreadBps: config.mmMinHalfSpreadBps,
         maxDistanceBps: config.mmMaxDistanceBps, insideTicks: config.quoteInsideTicks,
+        spreadMult: this.regime.spreadMult,
         tickSize: Number(this.market.params.tickSize.toString()),
         priceDec: log10(this.market.params.pricePrecision),
       },
@@ -664,6 +680,7 @@ export class Trader {
       toxicity: flow,
       flowSigned: this.flow.signed(book.block),
       intendedSide: side,
+      regimeAcute: this.regime.isAcute,
       exposureMon: side === "buy" ? this.position.mon + this.restingMon("buy") + this.quoteSize(book, side) : this.position.mon - this.restingMon("sell") - this.quoteSize(book, side),
       fundsOk: this.allowed(side, book),
       unresolvedSends: this.unresolved,
@@ -736,6 +753,7 @@ export class Trader {
       toxicity: this.flow.value(book.block),
       flowSigned: this.flow.signed(book.block),
       plan: journal?.plan ? { r: journal.plan.reservation, skewBps: journal.plan.skewBps, deltaBps: journal.plan.deltaBps, volBps: journal.plan.volBps } : null,
+      regime: { state: this.regime.current, detail: this.regime.detail },
       reflex: journal?.reflex ?? null,
       impulseId: journal?.impulseId ?? null,
       resting: { bidMon: round(this.restingMon("buy"), 1), askMon: round(this.restingMon("sell"), 1) },

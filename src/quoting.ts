@@ -19,6 +19,8 @@ export interface QuoteTuning {
   insideTicks: number;
   tickSize: number;
   priceDec: number;
+  /** Regime multiplier on the half-spread (1 = calm). */
+  spreadMult?: number;
 }
 
 export interface QuoteInput {
@@ -69,7 +71,7 @@ export function horizonVolBps(mids: number[], horizonBlocks: number): number {
 export function quotePlan(i: QuoteInput, t: QuoteTuning): QuotePlan {
   const qNorm = i.maxPositionMon > 0 ? clamp(i.inventoryMon / i.maxPositionMon, -1, 1) : 0;
   const skewBps = qNorm * t.gamma * i.sigmaBps;
-  const deltaBps = Math.max(t.minHalfSpreadBps, t.gamma * i.sigmaBps + t.liqHalfSpreadBps);
+  const deltaBps = Math.max(t.minHalfSpreadBps, (t.gamma * i.sigmaBps + t.liqHalfSpreadBps) * (t.spreadMult ?? 1));
   const reservation = i.mid * (1 - skewBps / 1e4);
   const scale = 10 ** t.priceDec;
   const tick = t.tickSize / scale;
