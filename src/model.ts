@@ -23,8 +23,6 @@ export interface TradeState {
   /** Taker prints over the last `horizonBlocks`. cvdMon = taker buy volume - taker sell volume. */
   trades: { count: number; buyMon: number; sellMon: number; cvdMon: number; vwap: number | null; lastPrice: number | null; lastSide: "buy" | "sell" | null };
   recentTrades: string[]; // newest last, "block side size @ price"
-  position: { mon: number; entryPrice: number | null; unrealizedUsd: number };
-  lastDecision: { action: Action; blocksAgo: number } | null;
   allowed: { buy: boolean; sell: boolean };
 }
 
@@ -48,7 +46,7 @@ const QUESTIONS = {
       question: "Will MON be higher or lower than the current mid after `horizonBlocks` more blocks?",
       goal: "Trade MON-USDC on Kuru. Blocks are ~300ms; `horizonBlocks` (~30 s) is the horizon. A decision is made every few blocks and held until the next one. The trade crosses the spread (`spreadBps`), so the move must beat that cost.",
       timing: "The order executes as an immediate-or-cancel market order in the next block.",
-      inputs: "Taker flow is the strongest signal: `trades.cvdMon` (taker buys minus taker sells over the horizon), `trades.lastSide` and `recentTrades` show who is hitting the book. `depth` and `book` show resting liquidity per side at several distances from mid; thin depth on one side means price moves easily that way. `returnsBps` and `recentMids` show the path over the horizon. `position` is current exposure. If `allowed.buy` is false the trade will be a sell regardless, and vice versa.",
+      inputs: "Taker flow is the strongest signal: `trades.cvdMon` (taker buys minus taker sells over the horizon), `trades.lastSide` and `recentTrades` show who is hitting the book. `depth` and `book` show resting liquidity per side at several distances from mid; thin depth on one side means price moves easily that way. `returnsBps` and `recentMids` show the path over the horizon. If `allowed.buy` is false the trade will be a sell regardless, and vice versa.",
     },
     criteria: {
       buy: "Buy MON now: mid more likely to be higher after `horizonBlocks` blocks, by more than the spread.",
@@ -86,7 +84,7 @@ export class MockModel implements Model {
     const t0 = performance.now();
     // momentum + book imbalance + noise, pulled back toward flat so it trades both ways
     const flow = state.trades.buyMon + state.trades.sellMon ? state.trades.cvdMon / (state.trades.buyMon + state.trades.sellMon) : 0;
-    const signal = state.returnsBps.last20 / 8 + state.bookImbalance * 1.5 + flow * 2 + this.noise(state.block) - (state.position.mon / config.maxPositionMon) * 2.5;
+    const signal = state.returnsBps.last20 / 8 + state.bookImbalance * 1.5 + flow * 2 + this.noise(state.block);
     const buy = 1 / (1 + Math.exp(-signal)); // binary softmax
     const probabilities = { buy, sell: 1 - buy, hold: 0 };
     const action: Action = buy >= 0.5 ? "buy" : "sell";

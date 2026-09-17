@@ -147,8 +147,6 @@ export class Trader {
       recentMids: sampled.map((x) => x.toFixed(6)).join(" "),
       trades: this.trades ? this.trades.summary(H, block) : empty,
       recentTrades: (this.trades?.recent(10) ?? []).map((t) => `${t.block} ${t.side} ${round(t.size, 1)} @ ${t.price.toFixed(6)}`),
-      position: { mon: this.position.mon, entryPrice: this.entryPrice(), unrealizedUsd: round(this.unrealizedUsd(book.mid), 4) },
-      lastDecision: this.lastDecision ? { action: this.lastDecision.action, blocksAgo: block - this.lastDecision.block } : null,
       allowed: { buy: this.allowed("buy"), sell: this.allowed("sell") },
     };
   }
