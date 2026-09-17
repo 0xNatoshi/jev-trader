@@ -73,3 +73,20 @@ test("reflex counters aggregate by name over the recent window", () => {
   s.close();
   done();
 });
+
+test("placedIntents returns exactly the orders the recovery path must verify", () => {
+  const { path, done } = scratch("placed");
+  const s = new Store(path);
+  const i = impulse("placed000001");
+  s.save(i);
+  s.openIntent(i, { side: "sell", sizeMon: 200, price: 0.0231, txHash: "0xabc", nonce: 9, status: "sent" });
+  expect(s.placedIntents().length).toBe(0); // sent is not placed
+  s.updateIntent(i.id, { status: "placed", orderId: 4242 });
+  const placed = s.placedIntents();
+  expect(placed.length).toBe(1);
+  expect(placed[0].order_id).toBe(4242);
+  s.updateIntent(i.id, { status: "filled" });
+  expect(s.placedIntents().length).toBe(0); // a filled order is off the book
+  s.close();
+  done();
+});

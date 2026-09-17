@@ -101,6 +101,8 @@ export class Trader {
   private unresolved = 0;
   /** tx hash to impulse id, so a receipt arriving on a later block lands on the right journal row. */
   private impulseByTx = new Map<string, string>();
+  /** Kuru order id to impulse id, so a taker fill lands on the impulse that placed the order. */
+  private impulseByOrder = new Map<number, string>();
 
   constructor(
     private market: Market,
@@ -180,7 +182,7 @@ export class Trader {
           if (process.env.STATE_LOG === "true") {
             try {
               appendFileSync("data/states.jsonl", JSON.stringify({
-                block, ts: Date.now(), state,
+                block, ts: Date.now(), state, score: impulse.score,
                 action: d.action, probabilities: d.probabilities,
                 latencyMs: Math.round(d.latencyMs),
               }) + "\n");
@@ -235,7 +237,9 @@ export class Trader {
                 this.journal(impulse, "exec", "execute", `${quote.side} ${quote.size} MON at ${quote.price.toFixed(6)}${quote.status === "sim" ? " (sim)" : ` tx ${quote.txHash}`}`);
                 if (quote.status === "sim") {
                   this.orders.clear(); // the simulated cancel
-                  this.orders.set(--this.simId, { side: wanted, price: quote.price, size: quote.size, block });
+                  const simOrderId = --this.simId;
+                  this.orders.set(simOrderId, { side: wanted, price: quote.price, size: quote.size, block });
+                  this.impulseByOrder.set(simOrderId, impulse.id);
                 } else if (quote.txHash) {
                   this.inflight.set(quote.txHash, quote);
                   this.impulseByTx.set(quote.txHash, impulse.id);
@@ -276,7 +280,10 @@ export class Trader {
     // never treated as a failed send (the transaction may well have landed).
     if (quote.status === "lost") this.unresolved++;
     for (const id of canceled) this.orders.delete(id);
-    if (quote.status === "placed" && quote.orderId !== null) this.orders.set(quote.orderId, { side: quote.side, price: quote.price, size: quote.size, block });
+    if (quote.status === "placed" && quote.orderId !== null) {
+      this.orders.set(quote.orderId, { side: quote.side, price: quote.price, size: quote.size, block });
+      if (impulseId) this.impulseByOrder.set(quote.orderId, impulseId);
+    }
     if (impulseId) this.journalQuote(impulseId, block, quote);
     const e = this.history.find((h) => h.block === block);
     if (e) e.quote = quote;
@@ -286,11 +293,25 @@ export class Trader {
   /** Land a receipt on its impulse: the send ledger moves and the transition records the outcome. */
   private journalQuote(impulseId: string, block: number, quote: Quote) {
     const status = quote.status === "placed" ? "placed" : quote.status === "reverted" ? "reverted" : "unknown";
-    this.store.updateIntent(impulseId, { status, txHash: quote.txHash });
+    this.store.updateIntent(impulseId, { status, txHash: quote.txHash, orderId: quote.orderId });
     const i = this.store.impulse(impulseId);
     if (!i) return;
     this.store.advance(i, "exec", status === "placed" ? "execute" : status === "reverted" ? "reverted" : "unknown",
       quote.orderId !== null ? `order ${quote.orderId} on the book` : `no receipt after block ${block}`);
+  }
+
+  /** Land a taker fill on the impulse that placed the order: the journal shows entry then fill. */
+  private journalFill(f: Fill) {
+    const impulseId = this.impulseByOrder.get(f.orderId);
+    if (!impulseId) return;
+    const remaining = Math.max(0, this.orders.get(f.orderId)?.size ?? 0);
+    this.store.updateIntent(impulseId, { status: remaining > 0 ? "partial" : "filled", orderId: f.orderId });
+    const i = this.store.impulse(impulseId);
+    if (i) {
+      this.journal(i, "fill", "fill",
+        `${f.side} ${f.size.toFixed(1)} MON at ${f.price.toFixed(6)}${f.simulated ? " (sim)" : ` tx ${f.txHash}`}${remaining > 0 ? `, ${remaining.toFixed(1)} MON left` : ""}`);
+    }
+    if (remaining <= 0) this.impulseByOrder.delete(f.orderId);
   }
 
   /** After each trade-log poll: apply our maker fills (live) or simulate them against the new prints (dry run). */
@@ -302,6 +323,7 @@ export class Trader {
     const byBlock = new Map<number, Fill[]>();
     for (const f of fills) {
       this.applyFill(f);
+      this.journalFill(f);
       const b = (f as Fill & { block: number }).block;
       byBlock.set(b, [...(byBlock.get(b) ?? []), f]);
     }
@@ -456,6 +478,37 @@ export class Trader {
       }
       if (r.status === "placed" && r.orderId !== null) this.orders.set(r.orderId, { side: row.side as Side, price: row.price, size: row.size_mon, block: row.block });
       if (r.status === "unknown") this.unresolved++;
+    }
+    // The in-memory book is not the source of truth: ask the chain what we still have resting.
+    if (this.market.wallet) {
+      const latest = await this.market.latestBlock().catch(() => 0);
+      if (latest) {
+        const from = Math.max(1, latest - config.recoveryLookbackBlocks);
+        const chain = await this.market.openOrders(from, latest).catch(() => null);
+        if (chain) {
+          const journaled = new Map(this.store.placedIntents().map((r) => [r.order_id!, r.id]));
+          let adopted = 0, unknown = 0;
+          for (const o of chain) {
+            this.orders.set(o.orderId, { side: o.side, price: o.price, size: o.size, block: latest });
+            const impulseId = journaled.get(o.orderId);
+            if (impulseId) { adopted++; this.impulseByOrder.set(o.orderId, impulseId); }
+            else unknown++;
+          }
+          // Journaled orders the chain no longer holds: filled or canceled while we were down.
+          for (const [orderId, impulseId] of journaled) {
+            if (chain.some((o) => o.orderId === orderId)) continue;
+            const i = this.store.impulse(impulseId);
+            if (i) this.journal(i, "exec", "unknown", `recovery: order ${orderId} left the book while we were down`);
+            this.store.updateIntent(impulseId, { status: "closed" });
+          }
+          if (unknown) {
+            // An order on the book we hold no record of is unmanaged exposure: fail closed.
+            this.unresolved += unknown;
+            console.error(`recovery: ${unknown} order(s) of ours resting on chain are not in the journal, new entries locked`);
+          }
+          console.log(`recovery: ${chain.length} order(s) resting on chain (${adopted} journaled, ${unknown} unknown), window ${latest - from} blocks`);
+        }
+      }
     }
     if (open.length) console.log(`recovery: ${open.length} open send(s) reconciled, ${this.unresolved} unresolved${this.unresolved ? " (new entries locked by the recovery reflex)" : ""}`);
   }

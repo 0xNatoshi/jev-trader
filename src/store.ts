@@ -30,8 +30,14 @@ export interface Intent {
   price: number;
   txHash: string | null;
   nonce: number | null;
-  /** sent = handed to the RPC, placed = order id on the book, reverted = gas spent, unknown = no receipt. */
-  status: "sent" | "placed" | "reverted" | "unknown" | "sim" | "lost";
+  /** The Kuru order id once the receipt landed: what the recovery path compares against the chain. */
+  orderId?: number | null;
+  /**
+   * sent = handed to the RPC, placed = order id on the book, partial/filled = a taker
+   * took it (partially or fully), closed = it left the book while we were down,
+   * reverted = gas spent, unknown = no receipt, sim = dry run.
+   */
+  status: "sent" | "placed" | "partial" | "filled" | "closed" | "reverted" | "unknown" | "sim" | "lost";
 }
 
 export interface Impulse {
@@ -77,6 +83,7 @@ CREATE TABLE IF NOT EXISTS intent (
   price REAL NOT NULL,
   tx_hash TEXT,
   nonce INTEGER,
+  order_id INTEGER,
   status TEXT NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -90,6 +97,8 @@ export class Store {
     mkdirSync(dirname(path) || ".", { recursive: true });
     this.db = new Database(path, { create: true });
     this.db.exec(SCHEMA);
+    // Additive migration: a journal opened before order_id existed keeps working.
+    try { this.db.exec("ALTER TABLE intent ADD COLUMN order_id INTEGER"); } catch {}
   }
 
   /** Full row write. Idempotent by impulse id: a replay lands on the same row. */
@@ -116,15 +125,15 @@ export class Store {
   openIntent(i: Impulse, intent: Intent) {
     i.intent = intent;
     this.db.run(
-      "INSERT OR REPLACE INTO intent(id, block, side, size_mon, price, tx_hash, nonce, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [i.id, i.block, intent.side, intent.sizeMon, intent.price, intent.txHash, intent.nonce, intent.status, Date.now()],
+      "INSERT OR REPLACE INTO intent(id, block, side, size_mon, price, tx_hash, nonce, order_id, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [i.id, i.block, intent.side, intent.sizeMon, intent.price, intent.txHash, intent.nonce, intent.orderId ?? null, intent.status, Date.now()],
     );
     this.save(i);
   }
 
   updateIntent(id: string, patch: Partial<Intent>) {
-    const row = this.db.query<{ side: string; size_mon: number; price: number; tx_hash: string | null; nonce: number | null; status: string }, [string]>(
-      "SELECT side, size_mon, price, tx_hash, nonce, status FROM intent WHERE id = ?",
+    const row = this.db.query<{ side: string; size_mon: number; price: number; tx_hash: string | null; nonce: number | null; order_id: number | null; status: string }, [string]>(
+      "SELECT side, size_mon, price, tx_hash, nonce, order_id, status FROM intent WHERE id = ?",
     ).get(id);
     if (!row) return;
     const next = {
@@ -133,13 +142,21 @@ export class Store {
       price: patch.price ?? row.price,
       txHash: patch.txHash ?? row.tx_hash,
       nonce: patch.nonce ?? row.nonce,
+      orderId: patch.orderId ?? row.order_id,
       status: (patch.status ?? row.status) as Intent["status"],
     };
-    this.db.run("UPDATE intent SET side = ?, size_mon = ?, price = ?, tx_hash = ?, nonce = ?, status = ?, updated_at = ? WHERE id = ?", [
-      next.side, next.sizeMon, next.price, next.txHash, next.nonce, next.status, Date.now(), id,
+    this.db.run("UPDATE intent SET side = ?, size_mon = ?, price = ?, tx_hash = ?, nonce = ?, order_id = ?, status = ?, updated_at = ? WHERE id = ?", [
+      next.side, next.sizeMon, next.price, next.txHash, next.nonce, next.orderId, next.status, Date.now(), id,
     ]);
     const i = this.impulse(id);
     if (i) { i.intent = next; this.save(i); }
+  }
+
+  /** Orders we believe are resting on the book: what the boot recovery compares against the chain. */
+  placedIntents() {
+    return this.db.query<{ id: string; block: number; side: string; size_mon: number; price: number; order_id: number | null; status: string }, []>(
+      "SELECT id, block, side, size_mon, price, order_id, status FROM intent WHERE status IN ('placed', 'partial') AND order_id IS NOT NULL ORDER BY block DESC",
+    ).all();
   }
 
   intent(id: string) {

@@ -237,7 +237,65 @@ export class Market {
     return { status: "lost", orderId: null, canceled: [], hash: intent.txHash, mined: false };
   }
 
-  /** Top the margin account up to MARGIN_MON / MARGIN_USDC. Runs once at startup, awaiting each receipt. */
+  /** Latest block, for recovery windows. */
+  async latestBlock(): Promise<number> {
+    return parseInt(await rpc<string>("eth_blockNumber", [], config.readRpcUrl), 16);
+  }
+
+  /**
+   * Our orders still resting on the book, rebuilt from the OrderBook event stream.
+   *
+   * Kuru's OrderCreated / OrdersCanceled / Trade carry NO indexed fields, so the
+   * filter happens in code: fetch those topics over the window in 100-block chunks
+   * (the public RPC rejects wider spans) and replay them. Trade.updatedSize is the
+   * remaining size after a fill, which is what makes a partial fill visible without
+   * a second call. Used at boot by the recovery path: the in-memory book is never
+   * treated as the source of truth.
+   */
+  async openOrders(fromBlock: number, latest: number): Promise<{ orderId: number; side: Side; price: number; size: number }[]> {
+    if (!this.wallet) return [];
+    const me = this.wallet.address.toLowerCase();
+    const topics = [
+      this.iface.getEventTopic("OrderCreated"),
+      this.iface.getEventTopic("OrdersCanceled"),
+      this.iface.getEventTopic("Trade"),
+    ];
+    const open = new Map<number, { orderId: number; side: Side; price: number; size: number }>();
+    for (let from = Math.max(1, fromBlock); from <= latest; from += 100) {
+      const to = Math.min(latest, from + 99);
+      const logs = await rpc<any[]>("eth_getLogs", [{
+        address: config.market,
+        topics: [topics],
+        fromBlock: "0x" + from.toString(16),
+        toBlock: "0x" + to.toString(16),
+      }], config.readRpcUrl).catch(() => []);
+      for (const log of logs) {
+        if (log.removed) continue;
+        let ev; try { ev = this.iface.parseLog(log); } catch { continue; }
+        if (ev.name === "OrderCreated") {
+          if (String(ev.args.owner).toLowerCase() !== me) continue;
+          const orderId = Number(ev.args.orderId);
+          open.set(orderId, {
+            orderId,
+            side: ev.args.isBuy ? "buy" : "sell",
+            price: Number(ev.args.price) / 10 ** this.priceDec,
+            size: Number(ethers.utils.formatUnits(ev.args.size, this.sizeDec)),
+          });
+        } else if (ev.name === "OrdersCanceled") {
+          if (String(ev.args.owner).toLowerCase() !== me) continue;
+          for (const id of ev.args.orderId) open.delete(Number(id));
+        } else if (ev.name === "Trade") {
+          if (String(ev.args.makerAddress).toLowerCase() !== me) continue;
+          const o = open.get(Number(ev.args.orderId));
+          if (!o) continue;
+          const remaining = Number(ethers.utils.formatUnits(ev.args.updatedSize, this.sizeDec));
+          if (remaining <= 0) open.delete(o.orderId);
+          else o.size = remaining;
+        }
+      }
+    }
+    return [...open.values()];
+  }
   private async ensureMargin() {
     const w = this.wallet!;
     const baseDec = this.params.baseAssetDecimals.toNumber(), quoteDec = this.params.quoteAssetDecimals.toNumber();

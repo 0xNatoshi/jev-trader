@@ -34,6 +34,8 @@ export const config = {
   minLiquidityMon: Number(env("MIN_LIQUIDITY_MON", "1000")),
   maxSpreadBps: Number(env("MAX_SPREAD_BPS", "12")),
   minScore: Number(env("MIN_SCORE", "25")),
+  /** Blocks of OrderBook logs the boot recovery replays to learn what we still have resting. */
+  recoveryLookbackBlocks: Number(env("RECOVERY_LOOKBACK_BLOCKS", "10000")),
   /** Startup deposits into the Kuru margin account, topped up to these balances. Limit orders draw from margin, not the wallet. */
   marginMon: Number(env("MARGIN_MON", "600")),
   marginUsdc: Number(env("MARGIN_USDC", "20")),
