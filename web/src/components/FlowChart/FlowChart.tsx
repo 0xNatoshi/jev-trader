@@ -120,7 +120,7 @@ export default function FlowChart({
       key: e.block,
       x: fx(e.block) - CELL_W / 2,
       fill: cellFill(e),
-      opacity: i === series.length - 1 ? 1 : e.fill && !e.fill.confirmed ? 0.6 : 0.82,
+      opacity: i === series.length - 1 ? 1 : e.quote && e.quote.status === "sent" ? 0.6 : 0.82,
     }));
 
     const beads = series
@@ -165,6 +165,8 @@ export default function FlowChart({
     const flip = x + model.shift > w - 168;
     const ty = Math.min(Math.max(model.fy(e.mid) - 92, PAD_TOP - 46), model.base - 82);
     const side = e.fill ? (e.fill.side === "buy" ? "BUY" : "SELL") : null;
+    const q = e.quote;
+    const quoteText = q ? `${q.side === "buy" ? "bid" : "ask"} ${fmtPrice(q.price)}` : "no quote";
     return {
       x,
       y: model.fy(e.mid),
@@ -172,8 +174,8 @@ export default function FlowChart({
       ty,
       block: `#${e.block}`,
       price: fmtPrice(e.mid),
-      trade: side ? `${side} ${fmtMon(e.fill!.size, 0)}` : "no fill",
-      tint: e.fill ? (e.fill.side === "buy" ? "var(--buy-ink)" : "var(--sell-ink)") : "var(--muted)",
+      trade: side ? `FILL ${side} ${fmtMon(e.fill!.size, 0)}` : quoteText,
+      tint: e.fill ? (e.fill.side === "buy" ? "var(--buy-ink)" : "var(--sell-ink)") : q ? (q.side === "buy" ? "var(--buy-ink)" : "var(--sell-ink)") : "var(--muted)",
       lat: e.decision && !e.decision.late ? `${Math.round(e.decision.latencyMs)} ms` : "late",
     };
   }, [model, hover, w]);

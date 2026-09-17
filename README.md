@@ -1,6 +1,6 @@
 # jev-trader
 
-One decision every Monad block. A TypeSafe Jev model watches the Kuru MON-USDC order book and answers buy or sell every ~300 ms. Every block trades. Fills are real IOC market orders. A small server streams every block to the dashboard.
+One decision every Monad block. A TypeSafe Jev model watches the Kuru MON-USDC order book and answers buy or sell every ~300 ms. Every block posts a real post-only limit order on that side, one tick inside the touch, replacing the last one. Fills happen when a taker hits it, so the bot earns the spread instead of paying it. A small server streams every block to the dashboard.
 
 ## Run
 
@@ -21,29 +21,36 @@ Deployed (dry run, mock model): https://jev-trader-production.up.railway.app
 Every event (see `src/trader.ts` for types):
 
     {
-      "block": 105424978, "ts": 1789593630676,
-      "mid": 0.0222735, "bestBid": 0.022265, "bestAsk": 0.022282, "spreadBps": 7.63,
-      "decision": { "action": "hold", "probabilities": { "buy": 0.15, "sell": 0.05, "hold": 0.80 }, "upIn10": 0.57, "latencyMs": 81, "late": false },
+      "block": 105488269, "ts": 1789593630676,
+      "mid": 0.022636, "bestBid": 0.022628, "bestAsk": 0.022644, "spreadBps": 7.07,
+      "decision": { "action": "buy", "probabilities": { "buy": 0.77, "sell": 0.23, "hold": 0 }, "upIn10": 0.77, "latencyMs": 81, "late": false },
+      "quote": { "side": "buy", "price": 0.022629, "size": 200, "txHash": "0x…", "gasMon": 0.0357, "cancel": [100295801], "status": "sent", "orderId": null, "capped": false },
       "fill": null,
-      "position": { "side": "short", "size": 1000, "entryPrice": 0.0222642, "unrealizedUsd": -0.0093, "unrealizedMon": -0.42 },
-      "totals": { "blocks": 69, "decisions": 69, "trades": 5, "lateBlocks": 0, "jevUsd": 0.000004, "gasMon": 0, "gasUsd": 0, "realizedUsd": 0, "pnlUsd": -0.0093, "pnlMon": -0.42, "pnlPct": -0.009 }
+      "resting": { "bidMon": 200, "askMon": 200 },
+      "position": { "side": "short", "size": 200, "entryPrice": 0.022633, "unrealizedUsd": -0.0006, "unrealizedMon": -0.027 },
+      "totals": { "blocks": 3, "decisions": 3, "quotes": 3, "fills": 1, "reverted": 0, "lateBlocks": 0, "jevUsd": 0.000004, "gasMon": 0.107, "gasUsd": 0.0024, "realizedUsd": 0, "pnlUsd": -0.003, "pnlMon": -0.13, "pnlPct": -0.003 }
     }
 
-`fill`, when present: `{ side, size, price, txHash, gasMon, simulated, confirmed }`. The model is asked every `DECIDE_EVERY_BLOCKS` blocks (default 10) about the move over `HORIZON_BLOCKS` (default 100, ~30 s); only those blocks carry a `fill`, and the blocks in between repeat the standing decision with `fill: null`. `decision.action` is `buy` or `sell`; `hold` appears only with `decision.late: true`, when the model missed the block and no trade happened. When the position cap blocks a side, the trade flips to the other side and `probabilities` still show the model's intent. `upIn10` equals the buy probability.
+Every block the model is asked about the move over `HORIZON_BLOCKS` (default 100, ~30 s) and answers `buy` or `sell`. `quote` is the order that block put on the book: a post-only limit order of `TRADE_SIZE_MON` on that side, `QUOTE_INSIDE_TICKS` inside the touch (clamped to the touch when the spread is too tight), in one `batchUpdate` that also cancels everything we had resting (`cancel`). `hold` appears only with `decision.late: true`, when the model missed the block and nothing was posted. When the position cap (or, live, margin funds) blocks a side, the quote goes on the other side with `capped: true` and `probabilities` still show the model's call. `resting` is our size known to be on the book after this block. `upIn10` equals the buy probability.
 
-Live orders are fired and forgotten, so the `block` event carries the **intent**: `confirmed: false`, `size` is the size asked for, `price` is the touch price, `gasMon` is `gasLimit x (last known base fee + priority)`. The position, P&L and `trades` are untouched until the receipt lands — up to a few blocks later — which arrives as its own SSE event:
+Live sends are fired and forgotten, so the `block` event carries the **intent**: `status: "sent"`, `gasMon` is `gasLimit x (last known base fee + priority)`. Monad charges the gas limit, so that is the real cost whether the order lands or not. The receipt arrives a block or two later as its own SSE event:
+
+    event: quote
+    data: { "block": 105488269, "quote": { …, "status": "placed", "orderId": 100295812, "gasMon": 0.0357 } }
+
+`status` becomes `placed` (with the order id) or `reverted` (the book moved through the price before the tx landed, or a cancelled order had already filled). No receipt after 10 blocks gives `lost`. Fills are not in our own transactions: someone else's taker order hits our resting one, and the Trade log for it arrives via the same `eth_getLogs` poll that feeds the model. Each block with fills gets its own SSE event, and `position`, `realizedUsd` and `fills` update then:
 
     event: fill
-    data: { "block": 105424978, "fill": { "side": "buy", "size": 199.4, "price": 0.022018, "txHash": "0x…", "gasMon": 0.0000255, "simulated": false, "confirmed": true } }
+    data: { "block": 105488271, "fill": { "side": "buy", "size": 200, "price": 0.022629, "txHash": "0x…", "orderId": 100295812, "simulated": false } }
 
-`block` is the block whose decision produced the order, so a client can go back and correct that row. A revert, or no receipt after 10 blocks, gives `size: 0` (gas is still charged on a revert). In a dry run there is no `fill` event: the `block` event's fill is already `simulated: true, confirmed: true` and is applied immediately.
+`txHash` is the taker's transaction. In a dry run the quote is `status: "sim"`: the order rests for one block and a real print crossing its price fills it (`simulated: true`).
 
 ## Layout
 
     src/config.ts   env
     src/chain.ts    block feed (WebSocket newHeads + polling backstop, newest block only), raw RPC
     src/book.ts     one-eth_call order book reader (decodes getL2Book, merges the AMM vault)
-    src/market.ts   Kuru: read book, hand-encoded IOC buy/sell, local nonce, async confirmation
+    src/market.ts   Kuru: read book, hand-encoded batchUpdate (cancel + post-only place), margin deposits, local nonce, async confirmation
     src/model.ts    Model interface, JevModel (AI SDK experimental_evaluate), MockModel
     src/trader.ts   the loop: one in flight, hold when late, position and P&L accounting
     src/server.ts   Bun.serve: snapshot, history, SSE

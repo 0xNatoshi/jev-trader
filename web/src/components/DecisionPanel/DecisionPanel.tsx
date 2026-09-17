@@ -73,7 +73,7 @@ export default function DecisionPanel({ latest }: DecisionPanelProps) {
       <section className={styles.section}>
         <div className={styles.sectionLabel}>STANDING ORDER</div>
         <div className={styles.order}>
-          {"> buy or sell MON/USDC on Kuru. every block. no abstaining."}
+          {"> post a bid or an ask on Kuru's MON/USDC book. every block. no abstaining."}
         </div>
       </section>
 

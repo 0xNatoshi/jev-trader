@@ -10,6 +10,9 @@
  * a visible L2 level): `price` is 1e18-scaled REGARDLESS of market pricePrecision (the SDK's
  * reconcileTradeEvent also uses formatUnits(price, 18)); `filledSize` is scaled by sizePrecision.
  * On MON-USDC log10(pricePrecision) is 8, so do NOT pass that as priceDec.
+ *
+ * The same logs tell us when one of OUR resting orders was hit: `makerAddress` is us. Those are
+ * collected separately as maker fills (with `updatedSize` so a fully filled order can be dropped).
  */
 import { rpc } from "./chain";
 import { toFloat } from "./book";
@@ -19,6 +22,9 @@ export const TRADE_EVENT_SIG = "Trade(uint40,address,bool,uint256,uint96,address
 export const TRADE_TOPIC0 = "0xf16924fba1c18c108912fcacaac7450c98eb3f2d8c0a3cdf3df7066c08f21581";
 
 export interface TradePrint { block: number; price: number; size: number; side: "buy" | "sell" }
+
+/** One of our resting orders got hit. `side` is OUR side (the maker's): a taker buy fills our ask, so side is "sell". */
+export interface MakerFill { block: number; txHash: string; orderId: number; price: number; size: number; updatedSize: number; side: "buy" | "sell" }
 
 export interface TradeSummary {
   count: number;
@@ -31,7 +37,7 @@ export interface TradeSummary {
   lastSide: "buy" | "sell" | null;
 }
 
-interface RawLog { blockNumber: string; logIndex: string; data: string; removed?: boolean }
+interface RawLog { blockNumber: string; logIndex: string; transactionHash: string; data: string; removed?: boolean }
 
 /** Trade.price is a 1e18 fixed-point number on every Kuru market. */
 export const TRADE_PRICE_DEC = 18;
@@ -47,16 +53,23 @@ export class TradeFeed {
   private readonly url: string;
   private readonly priceDec: number;
   private readonly sizeDec: number;
+  private readonly maker: string | null;
   private trades: TradePrint[] = [];
+  private fresh: TradePrint[] = []; // appended since the last drainPrints()
+  private fills: MakerFill[] = []; // appended since the last drainFills()
   private inFlight = false;
   lastBlock = 0;
 
-  /** `sizeDec` = log10(sizePrecision) (10 on MON-USDC). `priceDec` defaults to 18; override only if Kuru changes the event. */
-  constructor(opts: { market: string; url: string; sizeDec: number; priceDec?: number }) {
+  /**
+   * `sizeDec` = log10(sizePrecision) (10 on MON-USDC). `priceDec` defaults to 18; override only if
+   * Kuru changes the event. `maker` is our wallet: Trade logs with that makerAddress become fills.
+   */
+  constructor(opts: { market: string; url: string; sizeDec: number; priceDec?: number; maker?: string | null }) {
     this.market = opts.market;
     this.url = opts.url;
     this.priceDec = opts.priceDec ?? TRADE_PRICE_DEC;
     this.sizeDec = opts.sizeDec;
+    this.maker = opts.maker?.toLowerCase() ?? null;
   }
 
   /**
@@ -69,6 +82,7 @@ export class TradeFeed {
     let from = this.lastBlock === 0 ? Math.max(1, block - FIRST_LOOKBACK + 1) : this.lastBlock + 1;
     if (from > block) return;
     if (block - from + 1 > MAX_CATCHUP) from = block - MAX_CATCHUP + 1;
+    const first = this.lastBlock === 0;
     this.inFlight = true;
     try {
       while (from <= block) {
@@ -82,8 +96,8 @@ export class TradeFeed {
         // getLogs returns in block/logIndex order; keep newest last.
         for (const log of logs) {
           if (log.removed) continue;
-          const t = this.decode(log);
-          if (t) this.trades.push(t);
+          const t = this.decode(log, !first); // the warm-up window predates our orders: no fills from it
+          if (t) { this.trades.push(t); this.fresh.push(t); }
         }
         if (this.trades.length > RING) this.trades.splice(0, this.trades.length - RING);
         this.lastBlock = to;
@@ -96,7 +110,7 @@ export class TradeFeed {
     }
   }
 
-  private decode(log: RawLog): TradePrint | null {
+  private decode(log: RawLog, collectFills: boolean): TradePrint | null {
     const data = log.data.startsWith("0x") ? log.data.slice(2) : log.data;
     if (data.length < 64 * 8) return null;
     const word = (i: number) => BigInt("0x" + data.slice(i * 64, (i + 1) * 64));
@@ -105,7 +119,14 @@ export class TradeFeed {
     const price = toFloat(word(3), this.priceDec);
     const size = toFloat(word(7), this.sizeDec);
     if (size === 0) return null;
-    return { block: parseInt(log.blockNumber, 16), price, size, side: isBuy ? "buy" : "sell" };
+    const block = parseInt(log.blockNumber, 16);
+    if (collectFills && this.maker && "0x" + data.slice(64 + 24, 128) === this.maker) {
+      this.fills.push({
+        block, txHash: log.transactionHash, orderId: Number(word(0)), price, size,
+        updatedSize: toFloat(word(4), this.sizeDec), side: isBuy ? "sell" : "buy",
+      });
+    }
+    return { block, price, size, side: isBuy ? "buy" : "sell" };
   }
 
   summary(lastBlocks: number, currentBlock: number): TradeSummary {
@@ -126,5 +147,15 @@ export class TradeFeed {
   /** Newest last. */
   recent(n: number): TradePrint[] {
     return this.trades.slice(-n);
+  }
+
+  /** Prints appended since the last call (oldest first). Used to simulate maker fills in a dry run. */
+  drainPrints(): TradePrint[] {
+    const out = this.fresh; this.fresh = []; return out;
+  }
+
+  /** Our maker fills since the last call (oldest first). */
+  drainFills(): MakerFill[] {
+    const out = this.fills; this.fills = []; return out;
   }
 }

@@ -218,3 +218,8 @@
     transition: none;
   }
 }
+
+/* A block where a taker hit one of our resting orders: the detail is the fill, in full weight. */
+.filled .detail {
+  font-weight: 600;
+}

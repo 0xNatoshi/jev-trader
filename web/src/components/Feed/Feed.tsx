@@ -32,6 +32,12 @@ const KIND_CLASS: Record<Kind, string> = {
 
 const WORD: Record<Kind, string> = { buy: "BUY", sell: "SELL", late: "LATE" };
 
+/**
+ * One row per block. The word is the side the model picked, the detail is the order that went on
+ * the book (bid or ask at its price), and when a taker hit one of our orders in that block the
+ * detail becomes the fill instead. The tx column is the order's transaction: dim while pending,
+ * "rev" if the book moved through the price before it landed.
+ */
 export default function Feed({ events }: { events: BlockEvent[] }) {
   const listRef = useRef<HTMLDivElement | null>(null);
   // How many whole 26px rows fit in the box the layout gives us. The list
@@ -66,12 +72,13 @@ export default function Feed({ events }: { events: BlockEvent[] }) {
           rows.map((event, i) => {
             const kind = kindOf(event);
             const decision = event.decision;
+            const quote = event.quote;
             const fill = event.fill;
-            const isTrade = kind !== "late";
+            const decided = kind !== "late";
             const kindClass = KIND_CLASS[kind];
 
             const conf =
-              kind === "late" || !decision
+              !decided || !decision
                 ? ""
                 : "conf " +
                   Math.max(
@@ -80,20 +87,22 @@ export default function Feed({ events }: { events: BlockEvent[] }) {
                     decision.probabilities.hold,
                   ).toFixed(2);
 
-            const lat = kind === "late" || !decision ? "" : `${decision.latencyMs}ms`;
+            const lat = !decided || !decision ? "" : `${decision.latencyMs}ms`;
 
             let detail = "";
             let detailMuted = false;
-            if (isTrade) {
-              if (fill && fill.size > 0) {
-                detail = `${fmtSize(fill.size)} @ ${fmtPrice(fill.price)}`;
-              } else {
-                detail = "no fill";
-                detailMuted = true;
-              }
+            if (fill && fill.size > 0) {
+              detail = `FILL ${fmtSize(fill.size)} @ ${fmtPrice(fill.price)}`;
+            } else if (decided && quote) {
+              const word = quote.side === "buy" ? "bid" : "ask";
+              detail = `${word} ${fmtSize(quote.size)} @ ${fmtPrice(quote.price)}${quote.capped ? " cap" : ""}`;
+              detailMuted = quote.status === "reverted" || quote.status === "lost";
+            } else if (decided) {
+              detail = "no quote";
+              detailMuted = true;
             }
 
-            const rowClass = [styles.row, kindClass, i === 0 ? styles.newest : ""]
+            const rowClass = [styles.row, kindClass, i === 0 ? styles.newest : "", fill ? styles.filled : ""]
               .filter(Boolean)
               .join(" ");
 
@@ -109,17 +118,21 @@ export default function Feed({ events }: { events: BlockEvent[] }) {
                   {detail}
                 </span>
                 <span className={`${styles.cell} ${styles.tx}`}>
-                  {fill && fill.simulated ? (
+                  {fill && !fill.simulated && fill.txHash ? (
+                    <a href={txUrl(fill.txHash)} target="_blank" rel="noreferrer" title="the taker's transaction">
+                      {shortTx(fill.txHash)}
+                    </a>
+                  ) : quote && quote.status === "sim" ? (
                     <span className={styles.muted}>sim</span>
-                  ) : fill && fill.txHash ? (
+                  ) : quote && quote.txHash ? (
                     <a
-                      className={fill.confirmed ? undefined : styles.pending}
-                      title={fill.confirmed ? undefined : "pending"}
-                      href={txUrl(fill.txHash)}
+                      className={quote.status === "sent" ? styles.pending : quote.status === "placed" ? undefined : styles.muted}
+                      title={quote.status}
+                      href={txUrl(quote.txHash)}
                       target="_blank"
                       rel="noreferrer"
                     >
-                      {shortTx(fill.txHash)}
+                      {quote.status === "reverted" ? "rev" : quote.status === "lost" ? "lost" : shortTx(quote.txHash)}
                     </a>
                   ) : null}
                 </span>

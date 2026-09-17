@@ -1,6 +1,6 @@
-// Prove the hand-encoded IOC calldata matches the Kuru SDK's, without sending anything.
-// Builds + signs a buy and a sell with a random wallet, decodes the calldata back, and asserts
-// `data` and `value` equal what IOC.constructMarket*Transaction produces for the same inputs.
+// Prove the hand-encoded batchUpdate calldata round-trips through the Kuru ABI and that quote prices
+// are tick aligned and never cross, without sending anything. Builds + signs a bid and an ask with a
+// random wallet and decodes the calldata back.
 // Run: BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 bun run scripts/dry-encode.ts [rpcUrl]
 import { ethers } from "ethers";
 import * as Kuru from "@kuru-labs/kuru-sdk";
@@ -21,39 +21,37 @@ const market = new Market();
 market.params = await Kuru.ParamFetcher.getMarketParams(provider, config.market);
 const book = await market.readBook();
 const size = config.tradeSizeMon;
-console.log(`market ${config.market} · block ${book.block} · bid ${book.bid} ask ${book.ask} · size ${size} MON`);
+const priceDec = market.params.pricePrecision.toString().length - 1, sizeDec = market.params.sizePrecision.toString().length - 1;
+const tick = Number(market.params.tickSize.toString());
+console.log(`market ${config.market} · block ${book.block} · bid ${book.bid} ask ${book.ask} · tick ${tick / 10 ** priceDec} · size ${size} MON · ${config.quoteInsideTicks} tick inside`);
 console.log(`wallet ${market.address} (random, unfunded)\n`);
 
-// The SDK path, with gasLimit + gasPrice supplied so buildTransactionRequest makes no RPC call.
-const sdkTx = (side: "buy" | "sell") => {
-  const opts = { gasLimit: ethers.BigNumber.from(200_000), gasPrice: ethers.BigNumber.from(1) };
-  return side === "buy"
-    ? Kuru.IOC.constructMarketBuyTransaction(market.wallet!, config.market, market.params,
-        (size * book.ask * 1.003).toFixed(6),
-        ethers.utils.parseUnits((size * 0.995).toFixed(6), 18).toString(), false, false, opts)
-    : Kuru.IOC.constructMarketSellTransaction(market.wallet!, config.market, market.params,
-        size.toFixed(4),
-        ethers.utils.parseUnits((size * book.bid * 0.995).toFixed(6), 6).toString(), false, false, opts);
-};
-
 let failed = false;
+const check = (label: string, ok: boolean) => { console.log(`${ok ? "ok  " : "FAIL"} ${label}`); if (!ok) failed = true; };
 for (const side of ["buy", "sell"] as const) {
-  const tx = market.buildTx(side, size, book);
-  const raw = await market.wallet!.signTransaction(tx);
-  const parsed = ethers.utils.parseTransaction(raw);
-  const args = iface.parseTransaction({ data: String(tx.data) });
-  const sdk = await sdkTx(side);
-
-  const okData = String(tx.data) === String(sdk.data);
-  const okValue = ethers.BigNumber.from(tx.value!).eq(ethers.BigNumber.from(sdk.value ?? 0));
-  failed ||= !okData || !okValue;
-
-  console.log(`== ${side}`);
-  console.log(`  ${args.name}(${args.args.map((a) => a.toString()).join(", ")})`);
-  console.log(`  value ${ethers.utils.formatEther(tx.value!)} MON (${ethers.BigNumber.from(tx.value!).toString()} wei)`);
-  console.log(`  type ${parsed.type} gasLimit ${parsed.gasLimit} maxFee ${ethers.utils.formatUnits(parsed.maxFeePerGas!, "gwei")} gwei` +
-              ` priority ${ethers.utils.formatUnits(parsed.maxPriorityFeePerGas!, "gwei")} gwei nonce ${parsed.nonce} · signed ${raw.length / 2 - 1} bytes, from ${parsed.from}`);
-  console.log(`  vs SDK: data ${okData ? "MATCH" : "DIFF!"} · value ${okValue ? "MATCH" : "DIFF!"}\n`);
+  const price = market.quotePrice(side, book);
+  const cancel = [123, 456];
+  const tx = market.buildTx(side, size, price, cancel);
+  const signed = await market.wallet!.signTransaction(tx);
+  const parsed = ethers.utils.parseTransaction(signed);
+  const d = iface.decodeFunctionData("batchUpdate", parsed.data);
+  // ethers decodes uint32 as number and uint96/uint40 as BigNumber; normalise everything to BigNumber.
+  const bn = (xs: unknown[]) => xs.map((x) => ethers.BigNumber.from(x as ethers.BigNumberish));
+  const [bp, bs, sp, ss, ids] = [bn(d[0]), bn(d[1]), bn(d[2]), bn(d[3]), bn(d[4])];
+  const postOnly = d[5] as boolean;
+  const prices = side === "buy" ? bp : sp, sizes = side === "buy" ? bs : ss, otherPrices = side === "buy" ? sp : bp;
+  console.log(`${side}: price ${price} → ${prices.map(String)} units · size ${sizes.map(String)} · cancel ${ids.map(String)} · postOnly ${postOnly}`);
+  check(`${side} one order on our side, none on the other`, prices.length === 1 && otherPrices.length === 0);
+  check(`${side} price is on a tick`, prices[0]!.mod(tick).isZero());
+  check(`${side} price is ${price}`, prices[0]!.eq(Math.round(price * 10 ** priceDec)));
+  check(`${side} does not cross`, side === "buy" ? price < book.ask : price > book.bid);
+  check(`${side} is at or inside the touch`, side === "buy" ? price >= book.bid : price <= book.ask);
+  check(`${side} size is ${size} MON`, sizes[0]!.eq(ethers.utils.parseUnits(String(size), sizeDec)));
+  check(`${side} cancels ${cancel}`, ids.length === 2 && ids[0]!.eq(123) && ids[1]!.eq(456));
+  check(`${side} post only`, postOnly === true);
+  check(`${side} value is 0 (margin funded)`, parsed.value.isZero());
+  check(`${side} type-2 to the market`, parsed.type === 2 && parsed.to?.toLowerCase() === config.market.toLowerCase());
+  console.log();
 }
-console.log(failed ? "FAILED" : "all encodings match the SDK");
+console.log(failed ? "MISMATCH" : "all checks passed");
 process.exit(failed ? 1 : 0);

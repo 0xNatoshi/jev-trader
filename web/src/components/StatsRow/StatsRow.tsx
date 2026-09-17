@@ -42,6 +42,7 @@ export default function StatsRow({
       <span>last {last}</span>
       <span>avg {avg}</span>
       <span className={styles.nowrap}>{totals ? fmtInt(totals.decisions) : DASH} calls</span>
+      <span className={styles.nowrap}>{totals ? fmtInt(totals.fills) : DASH} fills</span>
       <span className={styles.spacer} />
       <span>uptime {up ?? "00:00:00"}</span>
     </div>

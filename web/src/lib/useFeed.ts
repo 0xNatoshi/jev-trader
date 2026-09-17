@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useReducer } from "react";
-import type { BlockEvent, ConnectionState, FeedState, Fill, Meta } from "./types";
+import type { BlockEvent, ConnectionState, FeedState, Fill, Meta, Quote } from "./types";
 
 export { useUptime } from "./useUptime";
 
@@ -23,6 +23,7 @@ type Action =
   | { type: "snapshot"; meta: Meta | null; history: BlockEvent[] }
   | { type: "block"; event: BlockEvent }
   | { type: "fill"; block: number; fill: Fill }
+  | { type: "quote"; block: number; quote: Quote }
   | { type: "connection"; connection: ConnectionState };
 
 const initialState: State = {
@@ -156,6 +157,19 @@ function reducer(state: State, action: Action): State {
       };
     }
 
+    case "quote": {
+      const idx = indexOfBlock(state.events, action.block);
+      if (idx < 0) return state;
+      const events = state.events.slice();
+      const updated: BlockEvent = { ...events[idx], quote: action.quote };
+      events[idx] = updated;
+      return {
+        ...state,
+        events,
+        latest: idx === events.length - 1 ? updated : state.latest,
+      };
+    }
+
     default:
       return state;
   }
@@ -176,8 +190,9 @@ function parseMeta(raw: Record<string, unknown> | null): Meta | null {
  * Live block feed over SSE.
  *
  * Connects to `${apiUrl}/events` and handles: `snapshot` (meta + history),
- * `block` (append, deduped by block number, capped at 1000), `fill`
- * ({ block, fill } -> replaces that block's fill) and `ping` (liveness).
+ * `block` (append, deduped by block number, capped at 1000), `quote`
+ * ({ block, quote } -> replaces that block's quote once its receipt lands), `fill`
+ * ({ block, fill } -> a taker hit our resting order in that block) and `ping` (liveness).
  * Reconnects with 1s -> 10s backoff, surfacing `connection`.
  */
 export function useFeed(apiUrl: string): FeedState {
@@ -261,6 +276,11 @@ export function useFeed(apiUrl: string): FeedState {
         const d = (data ?? {}) as { block?: number; fill?: Fill };
         if (typeof d.block !== "number" || !d.fill) return;
         dispatch({ type: "fill", block: d.block, fill: d.fill });
+      });
+      handle("quote", (data) => {
+        const d = (data ?? {}) as { block?: number; quote?: Quote };
+        if (typeof d.block !== "number" || !d.quote) return;
+        dispatch({ type: "quote", block: d.block, quote: d.quote });
       });
       handle("ping", () => {
         dispatch({ type: "connection", connection: "live" });
