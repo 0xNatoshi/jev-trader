@@ -6,9 +6,11 @@ strategy that eventually makes money.
 
 ## Policy (Thibault)
 
-- **Dry-run only** (`DRY_RUN=true`) until the strategy is validated **profitable
-  net of costs** (hours of simulated trading, credible fills, net PnL >= 0).
-- Only then: tiny live size, real wallet, iterate from there.
+- **Lab -> prod ladder, per market** (see `VALIDATION.md`): backtest ->
+  forward dry-run (medium-long term) -> tiny live. No stage skipped; no market
+  inherits another market's validation.
+- **No real funds until the forward stage shows medium-long-term profit, net of
+  costs.** Dry-run only (`DRY_RUN=true`) until then.
 
 ## What the lab changed vs the demo
 
@@ -43,5 +45,6 @@ strategy that eventually makes money.
 - Backfill on-chain: `scripts/backfill-logs.py` -> `data/history/raw/seg_<block>.jsonl.gz`
   (resumable, 100-block chunks, 4 workers; ~4 min per day of chain). Events:
   OrderCreated / OrdersCanceled / Trade (plus one undecoded topic to identify).
-- Scope so far: 30 days of MON-USDC events (full order flow, every order/cancel/trade).
+- Scope: FULL history of MON-USDC events (268 days, since deployment). Old-era
+  cancellations dropped to save space (everything is re-downloadable on-chain).
 - Next: decode -> compact parquet, behavior analyses, live WS capture.
