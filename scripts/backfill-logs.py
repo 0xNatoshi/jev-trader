@@ -10,7 +10,7 @@ Usage:
   python3 scripts/backfill-logs.py --days 30          # last ~30 days
   python3 scripts/backfill-logs.py --from-block 100000000 --to-block 100500000
 """
-import argparse, gzip, json, os, sys, time, urllib.request
+import argparse, gzip, json, os, shutil, sys, time, urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
@@ -53,12 +53,15 @@ def fetch_chunk(ch):
 def seg_path(s):
     return os.path.join(OUT_DIR, f"seg_{s}.jsonl.gz")
 
-def do_segment(s, e, workers):
+def meta_path(s):
+    return os.path.join(OUT_DIR, f"seg_{s}.meta.json")
+
+def do_segment(s, e, workers, keep_cancel_from=None):
     """Fetch [s, e) into seg_s.jsonl.gz. Returns (logs, errors)."""
     path = seg_path(s)
     chunks = [(b, min(b + CHUNK - 1, e - 1)) for b in range(s, e, CHUNK)]
     logs_n = 0; errors = 0
-    gz = gzip.open(path, "ab", compresslevel=6)
+    gz = gzip.open(path, "wb", compresslevel=6)
     try:
         with ThreadPoolExecutor(max_workers=workers) as ex:
             for a, logs in ex.map(fetch_chunk, chunks):
@@ -67,6 +70,10 @@ def do_segment(s, e, workers):
                     continue
                 logs_n += len(logs)
                 for l in logs:
+                    if (keep_cancel_from is not None
+                            and int(l["blockNumber"], 16) < keep_cancel_from
+                            and l.get("topics") and l["topics"][0].startswith("0x386974f41b")):
+                        continue  # old-era cancellations dropped (re-downloadable)
                     gz.write((json.dumps({
                         "bn": int(l["blockNumber"], 16),
                         "tx": l.get("transactionHash"),
@@ -93,6 +100,8 @@ def main():
     ap.add_argument("--days", type=int)
     ap.add_argument("--workers", type=int, default=WORKERS)
     ap.add_argument("--blocks-per-day", type=int, default=BLOCKS_PER_SEG)
+    ap.add_argument("--keep-cancel-from-block", type=int, default=None,
+                    help="drop OrdersCanceled events below this block (old eras)")
     args = ap.parse_args()
 
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -111,12 +120,15 @@ def main():
     segs = list(range(start, end, BLOCKS_PER_SEG))
     t0 = time.time(); total = 0; done = 0
     for s in segs:
+        if shutil.disk_usage(OUT_DIR).free < 1.5e9:
+            print("STOP: espace disque faible (<1.5 GB libres) - relancer plus tard, resumable", flush=True)
+            break
         e = min(s + BLOCKS_PER_SEG, end)
-        if os.path.exists(seg_path(s)) and os.path.getsize(seg_path(s)) > 0:
-            print(f"  seg {s:,}: déjà présent, skip", flush=True)
+        if os.path.exists(meta_path(s)) and os.path.exists(seg_path(s)) and os.path.getsize(seg_path(s)) > 0:
+            print(f"  seg {s:,}: déjà présent (meta ok), skip", flush=True)
             done += 1
             continue
-        n, errs = do_segment(s, e, args.workers)
+        n, errs = do_segment(s, e, args.workers, keep_cancel_from=args.keep_cancel_from_block)
         total += n
         done += 1
         el = time.time() - t0
