@@ -29,8 +29,8 @@ test("market quality gates: thin book, wide spread, low score", () => {
 });
 
 test("a screaming one-way tape pauses every quote, before the model", () => {
-  expect(checkReflexes({ ...base, toxicity: 0.85 }, "pre")).toBeNull();
-  expect(checkReflexes({ ...base, toxicity: 0.99 }, "pre")?.name).toBe("stressed_flow");
+  expect(checkReflexes({ ...base, toxicity: 0.95 }, "pre")).toBeNull();
+  expect(checkReflexes({ ...base, toxicity: 0.999 }, "pre")?.name).toBe("stressed_flow");
   // null means "not enough tape to judge", never "stressed".
   expect(checkReflexes({ ...base, toxicity: null }, "pre")).toBeNull();
 });
