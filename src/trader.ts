@@ -101,7 +101,17 @@ export class Trader {
       if (this.mids.length > 400) this.mids.shift();
       this.trades?.poll(block).then(() => this.harvest()); // off the hot path: eth_getLogs for prints (and our fills) since the last poll
 
-      const decision = await this.model.decide(this.buildState(block, book));
+      const state = this.buildState(block, book);
+      const decision = await this.model.decide(state);
+      if (process.env.STATE_LOG === "true") {
+        try {
+          appendFileSync("data/states.jsonl", JSON.stringify({
+            block, ts: Date.now(), state,
+            action: decision.action, probabilities: decision.probabilities,
+            latencyMs: Math.round(decision.latencyMs),
+          }) + "\n");
+        } catch {}
+      }
       const wanted: Side = decision.action === "sell" ? "sell" : "buy";
       const other: Side = wanted === "buy" ? "sell" : "buy";
       // The position cap (and, live, margin funds) can only pick the reducing side. The probabilities still show the model's call.
