@@ -4,6 +4,7 @@ import { checkReflexes, defaultReflexes, reflexesFor, type ReflexFacts } from ".
 const base: ReflexFacts = {
   killSwitchActive: false, sessionPnlUsd: 0, gasGwei: 102, liquidityMon: 10_000,
   spreadBps: 3, score: 60, alreadyQuotingSide: false, exposureMon: 200, fundsOk: true, unresolvedSends: 0,
+  toxicity: null, flowSigned: null, intendedSide: null,
 };
 
 test("a healthy block passes both passes", () => {
@@ -25,6 +26,27 @@ test("market quality gates: thin book, wide spread, low score", () => {
   expect(checkReflexes({ ...base, liquidityMon: 10 }, "pre")?.name).toBe("min_liquidity");
   expect(checkReflexes({ ...base, spreadBps: 40 }, "pre")?.name).toBe("max_spread");
   expect(checkReflexes({ ...base, score: 5 }, "pre")?.name).toBe("low_score");
+});
+
+test("a screaming one-way tape pauses every quote, before the model", () => {
+  expect(checkReflexes({ ...base, toxicity: 0.85 }, "pre")).toBeNull();
+  expect(checkReflexes({ ...base, toxicity: 0.99 }, "pre")?.name).toBe("stressed_flow");
+  // null means "not enough tape to judge", never "stressed".
+  expect(checkReflexes({ ...base, toxicity: null }, "pre")).toBeNull();
+});
+
+test("side-aware: we stand down on the side the flow is running over, not the other", () => {
+  const buyHeavy = { ...base, flowSigned: 0.9, toxicity: 0.9 };
+  // taker buying dominates: our ask is the one being run over
+  expect(checkReflexes({ ...buyHeavy, intendedSide: "sell" }, "post")?.name).toBe("toxic_side");
+  expect(checkReflexes({ ...buyHeavy, intendedSide: "buy" }, "post")).toBeNull();
+
+  const sellHeavy = { ...base, flowSigned: -0.9, toxicity: 0.9 };
+  expect(checkReflexes({ ...sellHeavy, intendedSide: "buy" }, "post")?.name).toBe("toxic_side");
+  expect(checkReflexes({ ...sellHeavy, intendedSide: "sell" }, "post")).toBeNull();
+
+  // moderate one-sidedness does not stand us down, in either direction
+  expect(checkReflexes({ ...base, flowSigned: 0.4, intendedSide: "sell" }, "post")).toBeNull();
 });
 
 test("side dependent checks only run before signing", () => {

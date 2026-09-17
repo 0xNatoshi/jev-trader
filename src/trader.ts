@@ -4,6 +4,7 @@ import { Market, type Book, type Fill, type Quote, type QuoteResult, type Side }
 import type { Action, Decision, Model, TradeState } from "./model";
 import { checkReflexes, killSwitchActive, type ReflexFacts } from "./reflexes";
 import { marketScore, type ScorePart } from "./score";
+import { FlowToxicity } from "./toxicity";
 import { Store, type Impulse, type Node, type Verdict } from "./store";
 import { TradeFeed, type MakerFill, type TradePrint } from "./trades";
 
@@ -27,6 +28,10 @@ export interface BlockEvent {
   reflex: string | null;
   /** Id of this block's impulse in the decision journal. */
   impulseId: string | null;
+  /** VPIN-lite toxicity of the flow, null until enough volume has been bucketed. */
+  toxicity: number | null;
+  /** Signed flow in [-1, 1]: positive = taker buying dominates. */
+  flowSigned: number | null;
   /** Our size known to be resting on the book after this block's order. */
   resting: { bidMon: number; askMon: number };
   position: { side: "long" | "short" | "flat"; size: number; entryPrice: number | null; unrealizedUsd: number; unrealizedMon: number };
@@ -123,6 +128,8 @@ export class Trader {
   scoreParts: ScorePart[] = [];
   /** Sends the chain has not explained yet, as the dashboard shows it. */
   get unresolvedCount() { return this.unresolved; }
+  /** One-sided taker flow over a rolling window; null until there is enough tape. */
+  readonly flow = new FlowToxicity(config.flowWindowBlocks, config.flowMinVolumeMon);
   /** Impulses each reflex stopped this session, by reflex name. */
   readonly reflexHits: Record<string, number> = {};
   /** Sends the chain has not explained yet. Above zero, the recovery reflex locks new entries. */
@@ -253,14 +260,15 @@ export class Trader {
               // only (re)quote when nothing rests on this side, or the touch moved past ours: no cancel/replace churn
               d.action = wanted;
               const cancel = [...this.orders.keys()].filter((id) => id > 0); // simulated orders have negative ids
+              const sizeMon = this.quoteSize(book, wanted);
               // The send is journalled BEFORE the signature: a crash in between leaves a row recovery can reconcile.
               this.store.openIntent(impulse, {
-                side: wanted, sizeMon: config.tradeSizeMon, price: this.market.quotePrice(wanted, book),
+                side: wanted, sizeMon, price: this.market.quotePrice(wanted, book),
                 txHash: null, nonce: this.market.wallet ? this.market.nextNonce : null,
                 status: this.market.wallet ? "sent" : "sim",
               });
               try {
-                quote = await this.market.send(block, wanted, config.tradeSizeMon, book, cancel, false);
+                quote = await this.market.send(block, wanted, sizeMon, book, cancel, false);
                 this.totals.quotes++;
                 this.store.openIntent(impulse, { ...impulse.intent!, txHash: quote.txHash, price: quote.price, status: quote.status === "sim" ? "sim" : "sent" });
                 this.journal(impulse, "jev", "pass", jevNote);
@@ -386,6 +394,7 @@ export class Trader {
   private harvest() {
     if (!this.trades) return;
     const prints = this.trades.drainPrints();
+    for (const p of prints) this.flow.add({ block: p.block, sizeMon: p.size, side: p.side }); // toxicity eats the same tape the fills are simulated from
     const fills: Fill[] = this.market.wallet ? this.liveFills(this.trades.drainFills()) : this.simFills(prints);
     if (!fills.length) return;
     const byBlock = new Map<number, Fill[]>();
@@ -588,6 +597,18 @@ export class Trader {
     if (open.length) console.log(`recovery: ${open.length} open send(s) reconciled, ${this.unresolved} unresolved${this.unresolved ? " (new entries locked by the recovery reflex)" : ""}`);
   }
 
+  /**
+   * Quote size from near-touch depth, after poly-maker's top lesson: on a thin book
+   * a fill should be small and disposable (a gapped market can shove a resting order
+   * into a directional bag we never wanted), while a deep book can absorb more. Depth
+   * is the cumulative resting size within 10 bps of mid on the side we would quote.
+   */
+  private quoteSize(book: Book, side: Side): number {
+    const depth = book.depthBps["10"]?.[side === "buy" ? "bid" : "ask"] ?? 0;
+    const ratio = config.tradeSizeMon > 0 ? depth / config.tradeSizeMon : 0;
+    return ratio >= config.deepDepthRatio ? config.maxQuoteMon : config.tradeSizeMon;
+  }
+
   /** Everything the reflexes read, assembled from live state. No model involved. */
   private reflexFacts(book: Book, side: Side): ReflexFacts {
     const depth = book.depthBps["25"] ?? { bid: 0, ask: 0 };
@@ -597,6 +618,7 @@ export class Trader {
     // where we put it (or one still in flight, fate unknown) blocks a new send.
     const displaced = !!resting && (side === "buy" ? resting.price < book.bid : resting.price > book.ask);
     const inflightSameSide = [...this.inflight.values()].some((q) => q.side === side);
+    const flow = this.flow.value(book.block);
     return {
       killSwitchActive: killSwitchActive(),
       sessionPnlUsd: this.totals.pnlUsd,
@@ -605,7 +627,10 @@ export class Trader {
       spreadBps: book.spreadBps,
       score: this.score,
       alreadyQuotingSide: inflightSameSide || (!!resting && !displaced),
-      exposureMon: side === "buy" ? this.position.mon + this.restingMon("buy") + config.tradeSizeMon : this.position.mon - this.restingMon("sell") - config.tradeSizeMon,
+      toxicity: flow,
+      flowSigned: this.flow.signed(book.block),
+      intendedSide: side,
+      exposureMon: side === "buy" ? this.position.mon + this.restingMon("buy") + this.quoteSize(book, side) : this.position.mon - this.restingMon("sell") - this.quoteSize(book, side),
       fundsOk: this.allowed(side, book),
       unresolvedSends: this.unresolved,
     };
@@ -628,6 +653,7 @@ export class Trader {
         mid: book.mid, spreadBps: round(book.spreadBps, 2), imbalance: round(book.imbalance, 3),
         depth25BidMon: round(depth.bid, 1), depth25AskMon: round(depth.ask, 1), ret20Bps: state.returnsBps.last20,
         positionMon: round(this.position.mon, 2), unresolvedSends: this.unresolved,
+        toxicity: this.flow.value(block),
         scoreParts: scored.parts.map((p) => `${p.name} ${p.delta > 0 ? "+" : ""}${p.delta}`).join(" "),
       },
     };
@@ -673,6 +699,8 @@ export class Trader {
       fill: null,
       exit,
       score: this.score,
+      toxicity: this.flow.value(book.block),
+      flowSigned: this.flow.signed(book.block),
       reflex: journal?.reflex ?? null,
       impulseId: journal?.impulseId ?? null,
       resting: { bidMon: round(this.restingMon("buy"), 1), askMon: round(this.restingMon("sell"), 1) },

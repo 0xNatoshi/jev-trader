@@ -6,7 +6,7 @@ export const config = {
   readRpcUrl: env("READ_RPC_URL", "https://rpc.monad.xyz")!, // book reads + eth_blockNumber polling + trade logs
   wsUrl: env("WS_URL"), // optional; polling backstop always runs
   chainId: 143,
-  market: env("MARKET", "0x065C9d28E428A0db40191a54d33d5b7c71a9C394")!, // Kuru MON-USDC
+  market: env("MARKET", "0x065C9d28E428A0db40191a54d33d5b7c71a9C394")!, // Kuru MON-USDC (checksummed)
   /** Kuru MarginAccount this market settles against (slot 73 of the OrderBook proxy; verifiedMarket(market) is true). */
   marginAccount: env("MARGIN_ACCOUNT", "0x2A68ba1833cDf93fa9Da1EEbd7F46242aD8E90c5")!,
   privateKey: env("PRIVATE_KEY"),
@@ -34,6 +34,23 @@ export const config = {
   minLiquidityMon: Number(env("MIN_LIQUIDITY_MON", "1000")),
   maxSpreadBps: Number(env("MAX_SPREAD_BPS", "12")),
   minScore: Number(env("MIN_SCORE", "25")),
+  /**
+   * Quote sizing from near-touch depth, after poly-maker's top lesson: on a thin
+   * book a fill should be small and disposable (a gapped market can shove a resting
+   * order into a directional bag), while a deep book can absorb our larger size.
+   * `deepDepthRatio` is depth-at-10-bps divided by the base size.
+   */
+  maxQuoteMon: Number(env("MAX_QUOTE_MON", "400")),
+  deepDepthRatio: Number(env("DEEP_DEPTH_RATIO", "100")),
+  /** Toxicity: one-sided taker flow over a rolling window. VPIN-style volume buckets
+   *  saturate on this market (a single print is larger than any sane bucket), so the
+   *  measure is net/gross taker volume over the last `flowWindowBlocks`. */
+  flowWindowBlocks: Number(env("FLOW_WINDOW_BLOCKS", "300")),
+  flowMinVolumeMon: Number(env("FLOW_MIN_VOLUME_MON", "10000")),
+  /** Side-aware gate: stand down on the side the flow is running over. */
+  maxToxicity: Number(env("MAX_TOXICITY", "0.7")),
+  /** Circuit breaker: pause every quote, in either direction. */
+  maxToxicityExtreme: Number(env("MAX_TOXICITY_EXTREME", "0.98")),
   /**
    * Maker decomposition: how many blocks after a fill the markout is measured.
    * The paper's adverse-selection term is a post-trade drift; 100 blocks is the

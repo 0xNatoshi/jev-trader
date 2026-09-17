@@ -61,6 +61,25 @@ transition), the console and the daily report:
 - **net edge = quoted + markout.** A maker with a positive quote and a negative
   net is being picked off, not paid. `dashboard` shows it as MAKER EDGE.
 
+## Sizing and toxicity (from the 17 Sep sweep)
+
+- **Sizing is a function of depth** (`Trader.quoteSize`): the base `TRADE_SIZE_MON`
+  (the venue minimum) on a near-touch book thinner than `DEEP_DEPTH_RATIO` x our size,
+  `MAX_QUOTE_MON` when it is deeper. `poly-maker`'s field guide ranks this first: on a
+  thin book a fill should be small and disposable, because a gapped market can shove a
+  resting order into a directional bag we never wanted.
+- **Toxicity gates a side, not the whole market.** `FlowToxicity` measures net over
+  gross taker volume across `FLOW_WINDOW_BLOCKS`. It replaced a VPIN implementation:
+  volume buckets saturate on this market because a single MON-USDC print is larger
+  than any sane bucket (measured live: VPIN pinned at 0.99 and blocked every quote).
+  Two reflexes use it: `toxic_side` stands down on the side the flow is running over
+  (buy-heavy flow fills our ask and keeps going), `stressed_flow` pauses everything
+  above `MAX_TOXICITY_EXTREME`.
+- **Market facts read on-chain**: `makerFeeBps = 0` and `takerFeeBps = 0` on MON-USDC,
+  so the maker's revenue is the spread alone and no reward scheme needs sizing for
+  (Kuru's `RewardVault` is signer-driven campaign infrastructure, not a standing
+  maker-reward program).
+
 ## Runbook
 
 - Run: `bun run src/index.ts` (dry-run by default). JSON on `:3000`, console on

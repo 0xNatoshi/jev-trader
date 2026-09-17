@@ -68,6 +68,7 @@ export function dashboardHtml(): string {
   <span class="tag" id="market">market</span>
   <span class="tag" id="reflex">reflex</span>
   <span class="tag" id="scoretag">score</span>
+  <span class="tag" id="toxtag">tox</span>
   <span class="dim" id="clock" style="margin-left:auto"></span>
 </header>
 <main>
@@ -129,6 +130,10 @@ export function dashboardHtml(): string {
     var r = state.latest && state.latest.reflex ? state.latest.reflex : null;
     document.getElementById('reflex').textContent = r ? 'last reflex: ' + r : 'no reflex fired';
     document.getElementById('scoretag').textContent = 'score ' + (state.latest ? state.latest.score : '-');
+    var signed = state.latest ? state.latest.flowSigned : null;
+    var toxEl = document.getElementById('toxtag');
+    toxEl.textContent = 'tox ' + (signed === null || signed === undefined ? '-' : (signed >= 0 ? '+' : '') + Number(signed).toFixed(2));
+    toxEl.className = 'tag' + (signed !== null && signed !== undefined && Math.abs(signed) >= 0.7 ? ' down' : '');
     document.getElementById('clock').textContent = new Date().toLocaleTimeString();
     document.getElementById('uptime').textContent = dur(Date.now() - state.meta.startedAt);
   }
@@ -154,7 +159,7 @@ export function dashboardHtml(): string {
   }
 
   function renderReflexes() {
-    var names = ['kill_switch', 'recovery_pending', 'daily_loss', 'gas_cap', 'min_liquidity', 'max_spread', 'low_score', 'duplicate_side', 'max_exposure', 'funds'];
+    var names = ['kill_switch', 'recovery_pending', 'daily_loss', 'gas_cap', 'min_liquidity', 'max_spread', 'low_score', 'stressed_flow', 'toxic_side', 'duplicate_side', 'max_exposure', 'funds'];
     document.getElementById('reflexes').innerHTML = names.map(function (n) {
       var hits = J.reflexHits[n] || 0;
       var last = state && state.latest && state.latest.reflex === n;

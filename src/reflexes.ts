@@ -30,6 +30,12 @@ export interface ReflexFacts {
   fundsOk: boolean;
   /** Sends the chain has not explained yet. Above zero, new entries stay locked. */
   unresolvedSends: number;
+  /** Toxicity: absolute one-sidedness of the flow over the window, null when too thin. */
+  toxicity: number | null;
+  /** Signed flow in [-1, 1]: positive = taker buying dominates. */
+  flowSigned: number | null;
+  /** The side this pass is about to quote, null in the pre-model pass. */
+  intendedSide: "buy" | "sell" | null;
 }
 
 export interface Reflex {
@@ -46,7 +52,13 @@ export function defaultReflexes(cfg = config): Reflex[] {
     { name: "gas_cap", note: `gas above ${cfg.maxFeeGwei} gwei`, check: (f) => f.gasGwei > cfg.maxFeeGwei },
     { name: "min_liquidity", note: `book thinner than ${cfg.minLiquidityMon} MON at 25 bps`, check: (f) => f.liquidityMon < cfg.minLiquidityMon },
     { name: "max_spread", note: `spread above ${cfg.maxSpreadBps} bps`, check: (f) => f.spreadBps > cfg.maxSpreadBps },
-    { name: "low_score", note: `market score below ${cfg.minScore}`, check: (f) => f.score < cfg.minScore },
+    { name: "low_score", note: `book score below ${cfg.minScore}`, check: (f) => f.score < cfg.minScore },
+    // Circuit breaker: the tape is screaming one way (Kalshi: one-sided flow is what
+    // predicts maker losses). Everything pauses.
+    { name: "stressed_flow", note: `flow one-sided beyond ${cfg.maxToxicityExtreme}`, check: (f) => f.toxicity !== null && f.toxicity >= cfg.maxToxicityExtreme },
+    // Side aware: quote the side the flow is NOT running over. Buy-heavy flow fills
+    // our ask and then keeps going, so stand down there and keep bidding.
+    { name: "toxic_side", note: "flow is running over that side", check: (f) => f.flowSigned !== null && f.intendedSide !== null && ((f.intendedSide === "sell" && f.flowSigned >= cfg.maxToxicity) || (f.intendedSide === "buy" && f.flowSigned <= -cfg.maxToxicity)) },
     { name: "duplicate_side", note: "our size already rests on that side", check: (f) => f.alreadyQuotingSide },
     { name: "max_exposure", note: `exposure beyond ${cfg.maxPositionMon} MON`, check: (f) => Math.abs(f.exposureMon) > cfg.maxPositionMon },
     { name: "funds", note: "margin cannot fund the order", check: (f) => !f.fundsOk },
@@ -54,7 +66,7 @@ export function defaultReflexes(cfg = config): Reflex[] {
 }
 
 /** Market-wide checks: safe to run before the model, no intended side needed. */
-const PRE_MODEL = new Set(["kill_switch", "recovery_pending", "daily_loss", "gas_cap", "min_liquidity", "max_spread", "low_score"]);
+const PRE_MODEL = new Set(["kill_switch", "recovery_pending", "daily_loss", "gas_cap", "min_liquidity", "max_spread", "low_score", "stressed_flow"]);
 
 /**
  * Which reflexes apply in each phase. The pre-model pass never guesses a side, so

@@ -37,8 +37,11 @@ Anything without a LICENSE is **ideas only, never code**.
    A **$1.225M Kuru incentive program** has been advertised to bootstrap liquidity,
    and reward schemes have mechanical rules (a minimum order size, a maximum distance
    from mid: `rewardsMinSize` / `rewardsMaxSpread`, ±10% bands on TRUF). Those rules
-   would decide sizing as much as our edge does. **Verify on-chain before building on
-   it** (MON-USDC eligibility is unconfirmed).
+   would decide sizing as much as our edge does. **Verified on-chain, 17 Sep: there is
+   no program to size for.** MON-USDC has `makerFeeBps = 0` and `takerFeeBps = 0`, and
+   Kuru's `RewardVault` is signer-driven campaign infrastructure rather than a standing
+   maker-reward scheme. The maker's revenue here is the spread alone, which is exactly
+   the zero-fee case the paper studies.
 5. **Stop simulating fills brutally.** We treat every print through our price as a
    full fill. The taxonomy to implement, rising realism: immediate / **queue
    position** / **probabilistic** / market impact
@@ -133,9 +136,9 @@ open — the whole segment's problem in one line.
 
 | # | Item | Where it lands | Cost |
 |---|---|---|---|
-| 1 | Size from depth (minimum on thin books, layered on deep ones) | `src/trader.ts` sizing | S |
-| 2 | VPIN (volume buckets, alert 0.7) as a reflex + `tox=` in the journal | `src/reflexes.ts` | S |
-| 3 | Verify Kuru rewards/incentive eligibility for MON-USDC, then size to qualify | on-site + config | S |
+| 1 | Size from depth (minimum on thin books, larger on deep ones) | done: `Trader.quoteSize`, `MAX_QUOTE_MON` |
+| 2 | Flow toxicity as a reflex, logged per decision | done: `FlowToxicity` + `toxic_side` / `stressed_flow` (VPIN abandoned, see §0.3) |
+| 3 | Kuru rewards eligibility for MON-USDC | done: zero fees both sides, nothing to size for |
 | 4 | Reservation price + inventory skew (`gamma`) instead of tick-inside-the-touch | `src/market.ts` `quotePrice` | M |
 | 5 | Queue-position fill model in the dry-run sim | `src/trader.ts` `simFills` | M |
 | 6 | Regime machine (jump / sweep / cooloff) as a reflex | `src/reflexes.ts` | M |
