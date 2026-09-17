@@ -16,6 +16,8 @@ export interface BlockEvent {
   quote: Quote | null;
   /** Maker fills that landed in this block (aggregated), attached when the trade logs for it arrive. */
   fill: Fill | null;
+  /** Position exit this block (lab: TP / SL / time stop), null otherwise. */
+  exit?: { reason: "tp" | "sl" | "time"; price: number; size: number } | null;
   /** Our size known to be resting on the book after this block's order. */
   resting: { bidMon: number; askMon: number };
   position: { side: "long" | "short" | "flat"; size: number; entryPrice: number | null; unrealizedUsd: number; unrealizedMon: number };
@@ -32,6 +34,8 @@ export interface Totals {
   fills: number;
   reverted: number;
   lateBlocks: number;
+  /** Blocks with no entry (weak signal): first-class abstention. */
+  holds: number;
   jevUsd: number;
   gasMon: number;
   gasUsd: number;
@@ -65,7 +69,9 @@ export class Trader {
   private inflight = new Map<string, Quote>();
   private simId = 0;
   private position = { mon: 0, costUsd: 0 }; // signed inventory and its cost basis
-  private totals: Totals = { blocks: 0, decisions: 0, quotes: 0, fills: 0, reverted: 0, lateBlocks: 0, jevUsd: 0, gasMon: 0, gasUsd: 0, realizedUsd: 0, pnlUsd: 0, pnlMon: 0, pnlPct: 0 };
+  /** Open-position plan: side, fill price reference, TP/SL levels, entry block. */
+  private entry: { side: Side; block: number; ref: number; tp: number; sl: number } | null = null;
+  private totals: Totals = { blocks: 0, decisions: 0, quotes: 0, fills: 0, reverted: 0, lateBlocks: 0, holds: 0, jevUsd: 0, gasMon: 0, gasUsd: 0, realizedUsd: 0, pnlUsd: 0, pnlMon: 0, pnlPct: 0 };
 
   constructor(
     private market: Market,
@@ -101,38 +107,68 @@ export class Trader {
       if (this.mids.length > 400) this.mids.shift();
       this.trades?.poll(block).then(() => this.harvest()); // off the hot path: eth_getLogs for prints (and our fills) since the last poll
 
-      const state = this.buildState(block, book);
-      const decision = await this.model.decide(state);
-      if (process.env.STATE_LOG === "true") {
-        try {
-          appendFileSync("data/states.jsonl", JSON.stringify({
-            block, ts: Date.now(), state,
-            action: decision.action, probabilities: decision.probabilities,
-            latencyMs: Math.round(decision.latencyMs),
-          }) + "\n");
-        } catch {}
-      }
-      const wanted: Side = decision.action === "sell" ? "sell" : "buy";
-      const other: Side = wanted === "buy" ? "sell" : "buy";
-      // The position cap (and, live, margin funds) can only pick the reducing side. The probabilities still show the model's call.
-      const side: Side | null = this.allowed(wanted, book) ? wanted : this.allowed(other, book) ? other : null;
-      this.totals.decisions++;
-      this.totals.jevUsd += (decision.inputTokens / 1e6) * config.jevUsdPerMTok;
-
+      let decision: Decision | null = null;
       let quote: Quote | null = null;
-      if (side) {
-        decision.action = side;
-        const cancel = [...this.orders.keys()].filter((id) => id > 0); // simulated orders have negative ids
-        quote = await this.market.send(block, side, config.tradeSizeMon, book, cancel, side !== wanted);
-        this.totals.quotes++;
-        if (quote.status === "sim") {
-          this.orders.clear(); // the simulated cancel
-          this.orders.set(--this.simId, { side, price: quote.price, size: quote.size, block });
-        } else if (quote.txHash) {
-          this.inflight.set(quote.txHash, quote);
+      let exit: BlockEvent["exit"] = null;
+
+      if (this.position.mon !== 0) {
+        // In a position: manage it (TP / SL / time stop). No flips, no new entry.
+        if (!this.entry) {
+          const side: Side = this.position.mon > 0 ? "buy" : "sell";
+          const ref = book.mid;
+          this.entry = {
+            side, block, ref,
+            tp: side === "buy" ? ref * (1 + config.tpBps / 1e4) : ref * (1 - config.tpBps / 1e4),
+            sl: side === "buy" ? ref * (1 - config.slBps / 1e4) : ref * (1 + config.slBps / 1e4),
+          };
         }
+        const e = this.entry!;
+        const hitTp = e.side === "buy" ? book.mid >= e.tp : book.mid <= e.tp;
+        const hitSl = e.side === "buy" ? book.mid <= e.sl : book.mid >= e.sl;
+        const timedOut = e.block > 0 && block - e.block >= config.timeStopBlocks;
+        if (hitTp || hitSl || timedOut) {
+          exit = this.closePosition(book, hitTp ? "tp" : hitSl ? "sl" : "time");
+        }
+      } else {
+        const state = this.buildState(block, book);
+        const d = await this.model.decide(state);
+        if (process.env.STATE_LOG === "true") {
+          try {
+            appendFileSync("data/states.jsonl", JSON.stringify({
+              block, ts: Date.now(), state,
+              action: d.action, probabilities: d.probabilities,
+              latencyMs: Math.round(d.latencyMs),
+            }) + "\n");
+          } catch {}
+        }
+        this.totals.decisions++;
+        this.totals.jevUsd += (d.inputTokens / 1e6) * config.jevUsdPerMTok;
+
+        const pUp = d.probabilities.buy ?? 0;
+        const wanted: Side = d.action === "sell" ? "sell" : "buy";
+        const restingSameSide = [...this.orders.values()].some((o) => o.side === wanted);
+        if (Math.abs(pUp - 0.5) >= config.entryMinProb && this.allowed(wanted, book)) {
+          d.action = wanted;
+          if (!restingSameSide) {
+            // only (re)quote when nothing is already resting on this side: no cancel/replace churn
+            const cancel = [...this.orders.keys()].filter((id) => id > 0); // simulated orders have negative ids
+            quote = await this.market.send(block, wanted, config.tradeSizeMon, book, cancel, false);
+            this.totals.quotes++;
+            if (quote.status === "sim") {
+              this.orders.clear(); // the simulated cancel
+              this.orders.set(--this.simId, { side: wanted, price: quote.price, size: quote.size, block });
+            } else if (quote.txHash) {
+              this.inflight.set(quote.txHash, quote);
+            }
+          }
+        } else {
+          d.action = "hold"; // weak signal: first-class abstention, no order
+          this.totals.holds++;
+          if (!this.market.wallet) this.orders.clear(); // drop stale resting quotes (sim)
+        }
+        decision = d;
       }
-      this.emit(block, book, decision, quote, false, { readMs: Math.round(readMs), loopMs: Math.round(performance.now() - t0) });
+      this.emit(block, book, decision, quote, false, { readMs: Math.round(readMs), loopMs: Math.round(performance.now() - t0) }, exit);
     } catch (e) {
       console.error(`block ${block}:`, (e as Error).message);
     } finally {
@@ -256,6 +292,7 @@ export class Trader {
     if (f.size <= 0) return;
     const signed = f.side === "buy" ? f.size : -f.size;
     const p = this.position;
+    const wasFlat = p.mon === 0;
     if (p.mon === 0 || Math.sign(p.mon) === Math.sign(signed)) {
       p.costUsd += signed * f.price; // adding to position
     } else {
@@ -268,13 +305,40 @@ export class Trader {
     }
     p.mon += signed;
     if (Math.abs(p.mon) < 1e-9) { p.mon = 0; p.costUsd = 0; }
+    if (wasFlat && p.mon !== 0) {
+      // a fill opened a position: arm TP/SL around the fill price
+      const side: Side = p.mon > 0 ? "buy" : "sell";
+      const ref = f.price;
+      const tp = side === "buy" ? ref * (1 + config.tpBps / 1e4) : ref * (1 - config.tpBps / 1e4);
+      const sl = side === "buy" ? ref * (1 - config.slBps / 1e4) : ref * (1 + config.slBps / 1e4);
+      this.entry = { side, block: (f as Fill & { block?: number }).block ?? 0, ref, tp, sl };
+      if (!this.market.wallet) this.orders.clear(); // entry filled: nothing else should rest (live: cancel TODO)
+    }
+    if (p.mon === 0) this.entry = null;
     this.totals.fills++;
+  }
+
+  /**
+   * Lab position management: close the whole position at market (cross to the
+   * touch) on TP, SL or time stop. The sim path is realized immediately; the
+   * live path still needs a reducing order + receipt handling (TODO).
+   */
+  private closePosition(book: Book, reason: "tp" | "sl" | "time") {
+    const size = Math.abs(this.position.mon);
+    const side: Side = this.position.mon > 0 ? "sell" : "buy";
+    const price = side === "sell" ? book.bid : book.ask;
+    this.orders.clear();
+    if (!this.market.wallet) {
+      this.applyFill({ side, size, price, txHash: null, orderId: 0, simulated: true } as Fill);
+    }
+    this.entry = null;
+    return { reason, price, size };
   }
 
   private entryPrice() { return this.position.mon ? this.position.costUsd / this.position.mon : null; }
   private unrealizedUsd(mid: number) { return this.position.mon ? this.position.mon * (mid - this.entryPrice()!) : 0; }
 
-  private emit(block: number, book: Book, decision: Decision | null, quote: Quote | null, late: boolean, timing?: Timing) {
+  private emit(block: number, book: Book, decision: Decision | null, quote: Quote | null, late: boolean, timing?: Timing, exit: BlockEvent["exit"] = null) {
     const t = this.totals;
     t.gasUsd = t.gasMon * book.mid;
     const unrealized = this.unrealizedUsd(book.mid);
@@ -289,6 +353,7 @@ export class Trader {
         : decision && { action: decision.action, probabilities: decision.probabilities, upIn10: decision.upIn10, latencyMs: Math.round(decision.latencyMs), late: false },
       quote,
       fill: null,
+      exit,
       resting: { bidMon: round(this.restingMon("buy"), 1), askMon: round(this.restingMon("sell"), 1) },
       position: {
         side: this.position.mon > 0 ? "long" : this.position.mon < 0 ? "short" : "flat",

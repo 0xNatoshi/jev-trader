@@ -16,6 +16,12 @@ export const config = {
   bankrollUsd: Number(env("BANKROLL_USD", "100")), // used for pnlPct
   /** Quote this many ticks inside the touch (0 = join the best bid/ask). Never crosses: clamps to the touch when the spread is too tight. */
   quoteInsideTicks: Number(env("QUOTE_INSIDE_TICKS", "1")),
+  /** Position management (lab): take-profit / stop-loss in bps from the entry fill, time stop in blocks. */
+  tpBps: Number(env("TP_BPS", "8")),
+  slBps: Number(env("SL_BPS", "8")),
+  timeStopBlocks: Number(env("TIME_STOP_BLOCKS", "150")),
+  /** Minimum |p(buy)-0.5| to enter a position; below that, hold. */
+  entryMinProb: Number(env("ENTRY_MIN_PROB", "0.15")),
   /** Startup deposits into the Kuru margin account, topped up to these balances. Limit orders draw from margin, not the wallet. */
   marginMon: Number(env("MARGIN_MON", "600")),
   marginUsdc: Number(env("MARGIN_USDC", "20")),
