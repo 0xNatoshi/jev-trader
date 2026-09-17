@@ -21,6 +21,7 @@ export const config = {
   priorityFeeGwei: Number(env("PRIORITY_FEE_GWEI", "2")), // Monad hardcodes eth_maxPriorityFeePerGas at 2
   pendingBlocks: 10, // give up on a tx with no receipt after this many blocks
   refreshBlocks: 200, // how often to refresh the fee estimate and the vault check
+  flipThreshold: Number(env("FLIP_THRESHOLD", "0.62")), // switch side only when the other side's probability clears this
   decideEveryBlocks: Number(env("DECIDE_EVERY_BLOCKS", "10")), // re-decide every N blocks; other blocks hold
   horizonBlocks: Number(env("HORIZON_BLOCKS", "100")), // the model is asked about the move over this many blocks (~30 s)
   model: env("MODEL", "mock") as "mock" | "jev",

@@ -91,7 +91,11 @@ export class Trader {
         return;
       }
       const decision = await this.model.decide(this.buildState(block, book));
-      let side: "buy" | "sell" = decision.action === "sell" ? "sell" : "buy";
+      // Hysteresis: keep the current side unless the model's belief in the other side clears the threshold.
+      // Jev's beliefs hover near 50/50 on bid-ask bounce, so without this it alternates every block.
+      const modelSide: "buy" | "sell" = decision.action === "sell" ? "sell" : "buy";
+      const prev = this.lastDecision?.action === "sell" ? "sell" : this.lastDecision?.action === "buy" ? "buy" : null;
+      let side: "buy" | "sell" = prev && modelSide !== prev && decision.probabilities[modelSide] < config.flipThreshold ? prev : modelSide;
       if (!this.allowed(side)) side = side === "buy" ? "sell" : "buy"; // position cap flips the side; probabilities still show intent
       decision.action = side;
       this.totals.decisions++;
