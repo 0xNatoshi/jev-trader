@@ -22,6 +22,18 @@ export const config = {
   timeStopBlocks: Number(env("TIME_STOP_BLOCKS", "150")),
   /** Minimum |p(buy)-0.5| to enter a position; below that, hold. */
   entryMinProb: Number(env("ENTRY_MIN_PROB", "0.15")),
+  /**
+   * Reflexes: deterministic gates run before the decision model and again before
+   * anything is signed (see src/reflexes.ts). A fired reflex ends the impulse with
+   * a logged reject, so a locked-out strategy is visible instead of silent.
+   */
+  killSwitchFile: env("KILL_SWITCH_FILE", "data/KILL")!,
+  sessionLossLimitUsd: Number(env("SESSION_LOSS_USD", "5")),
+  /** Market quality gates, deliberately permissive: they catch a broken book, they do not
+   *  reshape the strategy being measured. Average spread on this market is ~5 bps. */
+  minLiquidityMon: Number(env("MIN_LIQUIDITY_MON", "1000")),
+  maxSpreadBps: Number(env("MAX_SPREAD_BPS", "12")),
+  minScore: Number(env("MIN_SCORE", "25")),
   /** Startup deposits into the Kuru margin account, topped up to these balances. Limit orders draw from margin, not the wallet. */
   marginMon: Number(env("MARGIN_MON", "600")),
   marginUsdc: Number(env("MARGIN_USDC", "20")),

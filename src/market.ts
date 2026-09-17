@@ -81,6 +81,10 @@ export class Market {
   private pending = new Map<string, Pending>();
 
   get address() { return this.wallet?.address ?? null; }
+  /** The nonce the next signature would use, so the ledger can record it before the send. */
+  get nextNonce() { return this.nonce; }
+  /** Effective gas (base + priority) in gwei, as the gas_cap reflex reads it. */
+  get effectiveGasGwei() { return Number(ethers.utils.formatUnits(this.feeWei, "gwei")); }
   private get priceDec() { return log10(this.params.pricePrecision); }
   private get sizeDec() { return log10(this.params.sizePrecision); }
   private get tickUnits() { return Number(this.params.tickSize.toString()); }
@@ -205,6 +209,32 @@ export class Market {
     }
     const status: Quote["status"] = r.status === "0x0" ? "reverted" : "placed";
     return { block: p.block, quote: { ...p.quote, status, orderId, gasMon }, canceled };
+  }
+
+  /**
+   * Recovery path for a send the hot loop could not confirm. It never re-sends:
+   * a timeout is not proof the transaction was absent. It asks the hash first,
+   * then the nonce. A consumed nonce with no receipt means the transaction
+   * landed but we cannot know which order it created, which the caller must
+   * treat as unresolved rather than as a failed send.
+   */
+  async recoverSend(intent: { txHash: string | null; nonce: number | null; block: number; side: Side; sizeMon: number; price: number }): Promise<{ status: Quote["status"]; orderId: number | null; canceled: number[]; hash: string | null; mined: boolean }> {
+    if (!this.wallet) return { status: "sim", orderId: null, canceled: [], hash: null, mined: false };
+    if (intent.txHash) {
+      const r = await rpc<any>("eth_getTransactionReceipt", [intent.txHash]).catch(() => null);
+      if (r) {
+        const quote: Quote = { side: intent.side, price: intent.price, size: intent.sizeMon, txHash: intent.txHash, gasMon: 0, cancel: [], status: "sent", orderId: null, capped: false };
+        const parsed = this.parseReceipt(r, { block: intent.block, gasLimit: this.gasLimit, quote });
+        return { status: parsed.quote.status, orderId: parsed.quote.orderId, canceled: parsed.canceled, hash: intent.txHash, mined: true };
+      }
+    }
+    if (intent.nonce === null) return { status: "unknown", orderId: null, canceled: [], hash: intent.txHash, mined: false };
+    const latest = parseInt(await rpc<string>("eth_getTransactionCount", [this.wallet.address, "latest"]), 16);
+    const mined = latest > intent.nonce;
+    if (mined) return { status: "unknown", orderId: null, canceled: [], hash: intent.txHash, mined: true };
+    await this.resyncNonce().catch(() => {});
+    // The nonce is still free: the transaction never reached the chain, so nothing was spent and no order exists.
+    return { status: "lost", orderId: null, canceled: [], hash: intent.txHash, mined: false };
   }
 
   /** Top the margin account up to MARGIN_MON / MARGIN_USDC. Runs once at startup, awaiting each receipt. */

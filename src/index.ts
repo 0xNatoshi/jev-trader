@@ -13,6 +13,14 @@ const model = createModel();
 const server = startServer(
   { model: model.name, wallet: market.address, dryRun: config.dryRun, market: config.market, startedAt: Date.now() },
   () => trader.history,
+  {
+    recent: (n) => trader.store.recent(n),
+    counts: () => trader.store.counts(),
+    reflexHits: () => trader.reflexHits,
+    score: () => trader.score,
+    scoreParts: () => trader.scoreParts,
+    unresolved: () => trader.unresolvedCount,
+  },
 );
 const trader = new Trader(
   market,
@@ -23,7 +31,7 @@ const trader = new Trader(
       const p = e.decision.probabilities;
       const q = e.quote;
       const quote = !q ? " NO QUOTE (cap or funds on both sides)" : ` ${q.side.toUpperCase()} ${q.size} @ ${q.price.toFixed(6)}${q.capped ? " capped" : ""}${q.status === "sim" ? " (sim)" : ` cancel ${q.cancel.length} ${q.txHash}`}`;
-      console.log(`#${e.block} ${e.mid.toFixed(6)} b${(p.buy * 100).toFixed(0)} s${(p.sell * 100).toFixed(0)} ${e.decision.latencyMs}ms${quote} pnl $${e.totals.pnlUsd}${t ? ` · read ${t.readMs}ms loop ${t.loopMs}ms` : ""}`);
+      console.log(`#${e.block} ${e.mid.toFixed(6)} b${(p.buy * 100).toFixed(0)} s${(p.sell * 100).toFixed(0)} ${e.decision.latencyMs}ms score ${e.score}${e.reflex ? ` reflex ${e.reflex}` : ""}${quote} pnl $${e.totals.pnlUsd}${t ? ` | read ${t.readMs}ms loop ${t.loopMs}ms` : ""}`);
     }
   },
   (block, fill) => {
@@ -35,7 +43,13 @@ const trader = new Trader(
     if (quote.status !== "placed") console.log(`#${block} ${quote.status.toUpperCase()} ${quote.side} @ ${quote.price.toFixed(6)} gas ${quote.gasMon.toFixed(6)} MON ${quote.txHash}`);
   },
 );
+
+// Reconcile whatever the ledger left open BEFORE the loop trades: a send whose
+// receipt never arrived is unresolved, not failed, and it locks new entries.
+await trader.recover();
 trader.attachTradeFeed(log10(market.params.sizePrecision));
 
-console.log(`jev-trader · model=${model.name} · post-only ${config.quoteInsideTicks} tick inside the touch · horizon ${config.horizonBlocks} blocks · ${config.dryRun ? "DRY RUN" : `wallet ${market.address}`} · market ${config.market} · read ${config.readRpcUrl} · :${config.port}`);
+const counts = trader.store.counts();
+console.log(`jev-trader | model=${model.name} | post-only ${config.quoteInsideTicks} tick inside the touch | horizon ${config.horizonBlocks} blocks | ${config.dryRun ? "DRY RUN" : `wallet ${market.address}`} | market ${config.market} | read ${config.readRpcUrl} | journal ${counts.impulse} impulses / ${counts.transitions} transitions | :${config.port}`);
+console.log(`reflexes | min score ${config.minScore} | max spread ${config.maxSpreadBps} bps | min liquidity ${config.minLiquidityMon} MON | session loss ${config.sessionLossLimitUsd} USD | kill switch ${config.killSwitchFile} | console http://127.0.0.1:${config.port}/dashboard`);
 startBlockFeed((block) => trader.onBlock(block));

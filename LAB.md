@@ -22,9 +22,34 @@ strategy that eventually makes money.
 - Per-block `TradeState` + decision logged to `data/states.jsonl` when
   `STATE_LOG=true`.
 
+## Deterministic layer (reflexes, score, journal)
+
+Pattern borrowed in spirit from NERVE (`github.com/h100envy/nerve`, no LICENSE
+file: ideas only, never code). The doctrine it confirms: the model writes a
+thesis and a confidence, and it cannot move a size, pick a side the reflexes
+forbid, or send anything.
+
+- `src/reflexes.ts`, 9 pure checks in two passes. Market wide ones (kill switch,
+  unreconciled send, session loss, gas cap, liquidity, spread, score) run BEFORE
+  the model, so a locked-out strategy costs nothing. Side dependent ones
+  (duplicate side, max exposure, funds) run BEFORE signing.
+- `src/score.ts`, deterministic 0 to 100 book score (spread, depth, balance,
+  move, inventory). Same facts, same score, always. Its job is to gate broken
+  books and to give the model something to be measured against.
+- `src/store.ts`, SQLite journal (`data/decisions.db`): one impulse per event
+  worth remembering (a reflex fired, an order went out, a position closed, plus
+  a sampled share of holds), each with its typed transition history. The full
+  per block record stays in `states.jsonl`.
+- Exactly once: the send is journalled BEFORE the signature, with its nonce. A
+  receipt that never arrives is `unknown`, never a failed send, and nothing is
+  re-sent. `Trader.recover()` reconciles open sends at boot by hash then nonce;
+  `recovery_pending` locks new entries while anything is unexplained.
+
 ## Runbook
 
-- Run: `bun run src/index.ts` (dry-run by default). JSON + dashboard on :3000.
+- Run: `bun run src/index.ts` (dry-run by default). JSON on `:3000`, console on
+  `:3000/dashboard` (three columns, live over SSE), raw journal on
+  `:3000/api/journal`.
 - Offline replay of logged decisions:
   `bun scripts/replay-decisions.ts [--horizons 10,50,100]`.
 - Online demo archive (Jarrod's railway build): Hermes cron every 5 min writes
