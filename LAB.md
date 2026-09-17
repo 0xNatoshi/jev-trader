@@ -37,3 +37,11 @@ strategy that eventually makes money.
 - Extreme `p(buy)` (>= 0.95) underperforms at H=50..100 (-2 to -10 bps vs the
   window mean): flow extremes fade. Moderate signals (0.6..0.95) carry a small
   momentum edge. Small samples: keep collecting, re-run the replay.
+
+## Data pipeline (order flow)
+
+- Backfill on-chain: `scripts/backfill-logs.py` -> `data/history/raw/seg_<block>.jsonl.gz`
+  (resumable, 100-block chunks, 4 workers; ~4 min per day of chain). Events:
+  OrderCreated / OrdersCanceled / Trade (plus one undecoded topic to identify).
+- Scope so far: 30 days of MON-USDC events (full order flow, every order/cancel/trade).
+- Next: decode -> compact parquet, behavior analyses, live WS capture.
