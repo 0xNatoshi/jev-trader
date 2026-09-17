@@ -146,11 +146,13 @@ export class Trader {
 
         const pUp = d.probabilities.buy ?? 0;
         const wanted: Side = d.action === "sell" ? "sell" : "buy";
-        const restingSameSide = [...this.orders.values()].some((o) => o.side === wanted);
+        const restingSameSide = [...this.orders.values()].find((o) => o.side === wanted);
+        // Hysteresis: keep the resting quote unless the touch moved past it (displaced).
+        const displaced = !!restingSameSide && (wanted === "buy" ? restingSameSide.price < book.bid : restingSameSide.price > book.ask);
         if (Math.abs(pUp - 0.5) >= config.entryMinProb && this.allowed(wanted, book)) {
           d.action = wanted;
-          if (!restingSameSide) {
-            // only (re)quote when nothing is already resting on this side: no cancel/replace churn
+          if (!restingSameSide || displaced) {
+            // only (re)quote when nothing rests on this side, or the touch moved past ours: no cancel/replace churn
             const cancel = [...this.orders.keys()].filter((id) => id > 0); // simulated orders have negative ids
             quote = await this.market.send(block, wanted, config.tradeSizeMon, book, cancel, false);
             this.totals.quotes++;
