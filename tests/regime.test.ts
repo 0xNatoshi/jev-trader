@@ -33,7 +33,7 @@ test("a fast move inside the window is a jump: pause, then cool off, then calm",
 });
 
 test("a print worth many of our sizes is a sweep", () => {
-  const m = new RegimeMachine(CFG, 200);
+  const m = new RegimeMachine({ ...CFG, sweepRatio: 5 }, 200);
   expect(m.onPrints(500, [{ size: 900, side: "buy" }])).toBe("calm"); // under 5x
   expect(m.onPrints(501, [{ size: 1500, side: "sell" }])).toBe("sweep"); // 7.5x
   expect(m.isAcute).toBe(true);

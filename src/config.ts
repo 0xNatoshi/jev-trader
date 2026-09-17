@@ -48,7 +48,10 @@ export const config = {
   /** Regime machine: repricing jumps, liquidity sweeps, and the cool-off after them. */
   regimeJumpBps: Number(env("REGIME_JUMP_BPS", "15")),
   regimeJumpWindowBlocks: Number(env("REGIME_JUMP_WINDOW_BLOCKS", "20")),
-  regimeSweepRatio: Number(env("REGIME_SWEEP_RATIO", "5")),
+  /** A print at least this many times our reference size is a sweep. Calibrated to
+   *  the tape, not to intuition: prints of 1 000+ MON are ordinary here, so a sweep
+   *  has to be exceptional or the machine never leaves the cool-off. */
+  regimeSweepRatio: Number(env("REGIME_SWEEP_RATIO", "15")),
   regimeCooloffBlocks: Number(env("REGIME_COOLOFF_BLOCKS", "60")),
   regimeStressSpreadMult: Number(env("REGIME_STRESS_SPREAD_MULT", "2.5")),
   regimeCooloffSpreadMult: Number(env("REGIME_COOLOFF_SPREAD_MULT", "1.6")),
