@@ -29,18 +29,26 @@ def get(url, timeout=25):
         return json.load(r)
 
 
-def resolved_markets(want, pages=28, min_volume=0.0):
-    """Closed markets, newest resolutions first.
+def resolved_markets(want, days=45, pages=28):
+    """Markets that ended in the last `days` days.
 
-    Note: `volumeNum` is ~0 on closed markets (it is a current figure), so filtering on
-    it throws away almost everything -- an earlier run kept 39 markets out of 1000 that
-    way. Take every market with two tokens and an end date, and let the price history
-    decide what is usable.
+    The window matters more than the sort: browsing `closed=true` without it pulls the
+    far-dated markets first (end dates in 2029, closed early because the event was ruled
+    out), i.e. a sample that is almost all NO. That is what made the first two runs look
+    like a huge longshot edge.
     """
+    import datetime as dt
+    now = dt.datetime.now(dt.timezone.utc)
+    d_min = (now - dt.timedelta(days=days)).strftime("%Y-%m-%d")
+    d_max = now.strftime("%Y-%m-%d")
+
     out, offset, page = [], 0, 0
     seen = set()
     while page < pages and len(out) < want:
-        url = f"{GAMMA}?limit=100&offset={offset}&closed=true&order=endDate&ascending=false"
+        url = (
+            f"{GAMMA}?limit=100&offset={offset}&closed=true"
+            f"&end_date_min={d_min}&end_date_max={d_max}&order=endDate&ascending=false"
+        )
         try:
             batch = get(url)
         except Exception as e:
@@ -50,9 +58,7 @@ def resolved_markets(want, pages=28, min_volume=0.0):
             break
         for m in batch:
             tokens = m.get("clobTokenIds")
-            if not tokens or not m.get("endDate"):
-                continue
-            if m.get("id") in seen:
+            if not tokens or not m.get("endDate") or m.get("id") in seen:
                 continue
             try:
                 ids = json.loads(tokens) if isinstance(tokens, str) else tokens
@@ -60,21 +66,15 @@ def resolved_markets(want, pages=28, min_volume=0.0):
                 continue
             if len(ids) != 2:
                 continue
-            vol = m.get("volumeNum") or 0
-            if vol < min_volume:
-                continue
-            prices = m.get("outcomePrices")
+            prices_field = m.get("outcomePrices")
             try:
-                pr = json.loads(prices) if isinstance(prices, str) else prices
+                pr = json.loads(prices_field) if isinstance(prices_field, str) else prices_field
             except Exception:
                 continue
             if not pr or abs(float(pr[0]) - round(float(pr[0]))) > 1e-9:
-                continue  # not resolved yet: still trading
+                continue  # still trading
             seen.add(m.get("id"))
-            out.append({
-                "q": m.get("question"), "end": m.get("endDate"), "yes": ids[0],
-                "volume": vol, "outcomes": m.get("outcomes"), "outcomePrices": prices,
-            })
+            out.append({"q": m.get("question"), "end": m.get("endDate"), "yes": ids[0]})
         offset += 100
         page += 1
         if len(batch) < 100:
@@ -82,30 +82,47 @@ def resolved_markets(want, pages=28, min_volume=0.0):
     return out[:want]
 
 
-def price_before(token, end_iso, hours):
-    """YES price closest to (end - hours). CLOB prices-history is public."""
+def prices(token):
+    """Public CLOB price history for one outcome token."""
     try:
         h = get(f"{CLOB}/prices-history?market={token}&interval=max&fidelity=60")
-        pts = h.get("history") or []
+        return h.get("history") or []
     except Exception:
+        return []
+
+
+def price_before_last(pts, hours):
+    """Price `hours` before the LAST quotation, which is when the market really ended.
+
+    Measuring against the scheduled end date instead is a trap: Polymarket end dates are
+    often far out and events resolve early, so you end up reading a price after
+    resolution. That produced a beautiful, entirely fake longshot edge (every low-priced
+    market "settled NO") in the first run.
+    """
+    if len(pts) < 3:
         return None
+    last_t = pts[-1]["t"]
+    target = last_t - hours * 3600
+    if pts[0]["t"] > target:
+        return None  # the series does not reach back far enough
+    return min(pts, key=lambda p: abs(p["t"] - target))["p"], last_t
+
+
+def outcome_from_series(pts):
+    """Did token[0] win? Read it from its own last price: ~1 means it won, ~0 means it lost.
+
+    Do not trust `outcomes` / `outcomePrices` ordering here: for some markets the token
+    order and the outcome order differ, which silently inverts the calibration (the
+    first two runs showed impossible results, e.g. 92% of coin-flip markets settling NO).
+    """
     if not pts:
         return None
-    end = datetime.fromisoformat(end_iso.replace("Z", "+00:00")).timestamp()
-    target = end - hours * 3600
-    return min(pts, key=lambda p: abs(p["t"] - target))["p"]
-
-
-def won(outcomes, outcomePrices):
-    """Did YES win? Polymarket leaves outcomePrices at resolution, e.g. [1, 0]."""
-    try:
-        prices = json.loads(outcomePrices) if isinstance(outcomePrices, str) else outcomePrices
-        outs = json.loads(outcomes) if isinstance(outcomes, str) else outcomes
-    except Exception:
-        return None
-    if not prices or not outs:
-        return None
-    return 1 if float(prices[0]) > 0.5 else 0
+    last = pts[-1]["p"]
+    if last >= 0.9:
+        return 1
+    if last <= 0.1:
+        return 0
+    return None  # ambiguous ending: leave it out rather than guess
 
 
 def study(args):
@@ -114,13 +131,15 @@ def study(args):
     rows = []
 
     def work(m):
-        y = won(m["outcomes"], m["outcomePrices"])
+        pts = prices(m["yes"])
+        y = outcome_from_series(pts)
         if y is None:
             return None
-        p24 = price_before(m["yes"], m["end"], 24)
-        if p24 is None:
+        got = price_before_last(pts, 24)
+        if not got:
             return None
-        return {"q": m["q"], "end": m["end"], "vol": m["volume"], "p24": p24, "yes_won": y}
+        p24, last_t = got
+        return {"q": m["q"], "end": m["end"], "p24": p24, "won": y, "last_t": last_t, "n": len(pts)}
 
     with ThreadPoolExecutor(max_workers=8) as ex:
         for r in ex.map(work, ms):
@@ -135,8 +154,8 @@ def study(args):
         if not sel:
             continue
         priced = sum(r["p24"] for r in sel) / len(sel)
-        freq = sum(r["yes_won"] for r in sel) / len(sel)
-        # Buying NO at (1 - p): pays 1 if YES loses, costs (1 - p).
+        freq = sum(r["won"] for r in sel) / len(sel)
+        # Buying the OTHER side at (1 - p): pays 1 if token0 loses, costs (1 - p).
         edge = (1 - freq) * 1.0 - (1 - priced)
         print(f"{lo:>5.2f}-{hi:<6.2f} {len(sel):>5} {priced:>7.3f} {freq:>11.3f} {edge:>+9.3f}")
 
