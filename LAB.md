@@ -61,6 +61,22 @@ transition), the console and the daily report:
 - **net edge = quoted + markout.** A maker with a positive quote and a negative
   net is being picked off, not paid. `dashboard` shows it as MAKER EDGE.
 
+## Fill simulation: queue position
+
+`src/fills.ts`. The dry run used to fill us the moment a print touched our price,
+which is optimistic on the one dimension that decides a maker's PnL. Now:
+
+- an order carries `queueAheadMon`, the resting size at its price read from the top
+  levels when it joined (0 when it joins inside the touch, i.e. a new level: first in
+  queue, which is the honest reward for stepping in);
+- a print AT our price consumes that queue first, then fills us with what is left;
+- a print strictly THROUGH our price swept the level, so the queue does not protect us;
+- replacing an order resets its queue, exactly as a cancel/replace does on the venue.
+
+Expect fewer, smaller fills than before: that is the point. Every number the lab
+reports (capture, markout, carry) is now measured against a fill model that does not
+hand us the fills it cannot prove.
+
 ## Quoting: reservation price, skew, volatility-scaled spread
 
 `src/quoting.ts` is a deterministic two-line version of Avellaneda-Stoikov:
