@@ -7,6 +7,7 @@ import { checkReflexes, killSwitchActive, type ReflexFacts } from "./reflexes";
 import { marketScore, type ScorePart } from "./score";
 import { FlowToxicity } from "./toxicity";
 import { horizonVolBps, quotePlan, type QuotePlan } from "./quoting";
+import { queueAheadAt, simulateFills, type SimOrder } from "./fills";
 import { Store, type Impulse, type Node, type Verdict } from "./store";
 import { TradeFeed, type MakerFill, type TradePrint } from "./trades";
 
@@ -111,7 +112,7 @@ export class Trader {
   private lastBook: Book | null = null;
   private trades: TradeFeed | null = null;
   /** Orders we know are resting on the book (live: from receipts; dry run: last block's simulated order). */
-  private orders = new Map<number, Resting>();
+  private orders = new Map<number, SimOrder>();
   /** Live quotes sent but not yet confirmed; they may become resting orders, so they count toward the cap. */
   private inflight = new Map<string, Quote>();
   private simId = 0;
@@ -286,7 +287,11 @@ export class Trader {
                 if (quote.status === "sim") {
                   this.orders.clear(); // the simulated cancel
                   const simOrderId = --this.simId;
-                  this.orders.set(simOrderId, { side: wanted, price: quote.price, size: quote.size, block });
+                  const levels = wanted === "buy" ? book.levels.bids : book.levels.asks;
+                  this.orders.set(simOrderId, {
+                    side: wanted, price: quote.price, size: quote.size, block,
+                    queueAheadMon: queueAheadAt(levels, quote.price, this.tickPrice),
+                  });
                   this.impulseByOrder.set(simOrderId, impulse.id);
                 } else if (quote.txHash) {
                   this.inflight.set(quote.txHash, quote);
@@ -441,23 +446,19 @@ export class Trader {
   }
 
   /**
-   * A simulated order placed at block N is on the book from N+1. A taker sell printing at or below
-   * our bid (or a taker buy at or above our ask) would have taken us first: fill up to the print's size.
+   * A simulated order placed at block N is on the book from N+1. A taker print touching our price
+   * trades the queue already resting there first (`queueAheadMon`), so joining a level does not fill
+   * us; a print strictly through our price sweeps the level instead. See src/fills.ts.
    */
   private simFills(prints: TradePrint[]): (Fill & { block: number })[] {
-    const out: (Fill & { block: number })[] = [];
-    for (const p of prints) {
-      for (const [id, o] of this.orders) {
-        if (p.block <= o.block || o.size <= 0) continue;
-        const hit = o.side === "buy" ? p.side === "sell" && p.price <= o.price : p.side === "buy" && p.price >= o.price;
-        if (!hit) continue;
-        const size = Math.min(o.size, p.size);
-        o.size -= size;
-        if (o.size <= 1e-9) this.orders.delete(id);
-        out.push({ side: o.side, size, price: o.price, txHash: null, orderId: id, simulated: true, block: p.block });
-      }
-    }
-    return out;
+    return simulateFills(prints, this.orders, this.tickPrice).map((f) => ({
+      side: f.side, size: f.size, price: f.price, txHash: null, orderId: f.orderId, simulated: true, block: f.block,
+    }));
+  }
+
+  /** Tick size in price units, for queue-position arithmetic. */
+  private get tickPrice(): number {
+    return Number(this.market.params.tickSize.toString()) / 10 ** log10(this.market.params.pricePrecision);
   }
 
   private restingMon(side: Side) {
