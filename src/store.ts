@@ -14,7 +14,7 @@ import { dirname } from "node:path";
  * the human-readable stream; this is the audit trail the recovery path reads.
  */
 
-export type Node = "scan" | "reflex" | "jev" | "risk" | "exec" | "fill" | "exit";
+export type Node = "scan" | "reflex" | "jev" | "risk" | "exec" | "fill" | "markout" | "exit";
 export type Verdict = "pass" | "reject" | "hold" | "execute" | "fill" | "reverted" | "unknown";
 
 export interface Transition {

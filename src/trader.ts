@@ -54,6 +54,30 @@ export interface Totals {
   pnlUsd: number;
   pnlMon: number;
   pnlPct: number;
+  /** Maker edge, decomposed at each fill (see MmAgg). */
+  mm: MmAgg;
+}
+
+/**
+ * The maker's PnL split the way the literature writes it (arXiv 2607.11888):
+ * revenue = spread income - adverse selection - inventory carry (no funding, no
+ * hedging here). Directional edge is NOT a component: a maker that only earns
+ * when the mid cooperates is a directional trader with extra steps.
+ */
+export interface MmAgg {
+  /** Fills whose markout has been resolved. */
+  n: number;
+  /** Notional of those fills, in USD. */
+  notionalUsd: number;
+  /** sign x (mid at fill - our price) x size: the spread we actually quoted into. */
+  captureUsd: number;
+  /** sign x (mid after H - mid at fill) x size: negative means informed flow ran us over. */
+  markoutUsd: number;
+  /** Notional-weighted, in bps of the mid at fill. */
+  captureBps: number;
+  markoutBps: number;
+  /** Mark-to-market PnL of the inventory we carry between fills. */
+  carryUsd: number;
 }
 
 interface Resting { side: Side; price: number; size: number; block: number }
@@ -85,7 +109,11 @@ export class Trader {
   private position = { mon: 0, costUsd: 0 }; // signed inventory and its cost basis
   /** Open-position plan: side, fill price reference, TP/SL levels, entry block. */
   private entry: { side: Side; block: number; ref: number; tp: number; sl: number } | null = null;
-  private totals: Totals = { blocks: 0, decisions: 0, quotes: 0, fills: 0, reverted: 0, lateBlocks: 0, holds: 0, reflexRejects: 0, jevUsd: 0, gasMon: 0, gasUsd: 0, realizedUsd: 0, pnlUsd: 0, pnlMon: 0, pnlPct: 0 };
+  private totals: Totals = { blocks: 0, decisions: 0, quotes: 0, fills: 0, reverted: 0, lateBlocks: 0, holds: 0, reflexRejects: 0, jevUsd: 0, gasMon: 0, gasUsd: 0, realizedUsd: 0, pnlUsd: 0, pnlMon: 0, pnlPct: 0, mm: { n: 0, notionalUsd: 0, captureUsd: 0, markoutUsd: 0, captureBps: 0, markoutBps: 0, carryUsd: 0 } };
+  /** Fills waiting for their markout horizon to pass. */
+  private markoutQueue: { block: number; side: Side; price: number; size: number; mid: number; impulseId: string | null }[] = [];
+  /** Mid of the previous block, for the inventory carry term. */
+  private lastCarryMid = 0;
   /** Typed decision journal: impulses, their transitions, and the send ledger. */
   readonly store = new Store();
   readonly startedAt = Date.now();
@@ -135,6 +163,8 @@ export class Trader {
       const readMs = performance.now() - t0;
       this.lastBook = book;
       this.mids.push(book.mid);
+      this.resolveMarkouts(block, book.mid);
+      this.markCarry(book.mid);
       if (this.mids.length > 400) this.mids.shift();
       this.trades?.poll(block).then(() => this.harvest()); // off the hot path: eth_getLogs for prints (and our fills) since the last poll
 
@@ -300,6 +330,44 @@ export class Trader {
       quote.orderId !== null ? `order ${quote.orderId} on the book` : `no receipt after block ${block}`);
   }
 
+  /**
+   * Resolve the markout of every fill now `config.markoutBlocks` old, and keep the
+   * running decomposition. `capture` is what we quoted into; `markout` is what the
+   * flow knew that we did not. A maker whose capture is positive but whose total is
+   * negative is being picked off, not paid.
+   */
+  private resolveMarkouts(block: number, mid: number) {
+    const horizon = config.markoutBlocks;
+    while (this.markoutQueue.length && block - this.markoutQueue[0].block >= horizon) {
+      const m = this.markoutQueue.shift()!;
+      const sign = m.side === "buy" ? 1 : -1;
+      const notional = m.size * m.mid;
+      if (notional <= 0) continue;
+      const capture = sign * (m.mid - m.price) * m.size;
+      const markout = sign * (mid - m.mid) * m.size;
+      const mm = this.totals.mm;
+      mm.n++;
+      mm.notionalUsd += notional;
+      mm.captureUsd += capture;
+      mm.markoutUsd += markout;
+      mm.captureBps = (mm.captureUsd / mm.notionalUsd) * 1e4;
+      mm.markoutBps = (mm.markoutUsd / mm.notionalUsd) * 1e4;
+      if (m.impulseId) {
+        const i = this.store.impulse(m.impulseId);
+        if (i) {
+          this.journal(i, "markout", "fill",
+            `capture ${((capture / notional) * 1e4).toFixed(2)} bps, markout ${((markout / notional) * 1e4).toFixed(2)} bps over ${horizon} blocks`);
+        }
+      }
+    }
+  }
+
+  /** Mark the inventory we carry between fills: the part of the PnL that is not market making. */
+  private markCarry(mid: number) {
+    if (this.lastCarryMid > 0) this.totals.mm.carryUsd += this.position.mon * (mid - this.lastCarryMid);
+    this.lastCarryMid = mid;
+  }
+
   /** Land a taker fill on the impulse that placed the order: the journal shows entry then fill. */
   private journalFill(f: Fill) {
     const impulseId = this.impulseByOrder.get(f.orderId);
@@ -323,6 +391,13 @@ export class Trader {
     const byBlock = new Map<number, Fill[]>();
     for (const f of fills) {
       this.applyFill(f);
+      // Every fill enters the decomposition, mapped to an impulse or not.
+      this.markoutQueue.push({
+        block: (f as Fill & { block: number }).block,
+        side: f.side, price: f.price, size: f.size,
+        mid: this.lastBook?.mid ?? f.price,
+        impulseId: this.impulseByOrder.get(f.orderId) ?? null,
+      });
       this.journalFill(f);
       const b = (f as Fill & { block: number }).block;
       byBlock.set(b, [...(byBlock.get(b) ?? []), f]);

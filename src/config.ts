@@ -34,6 +34,12 @@ export const config = {
   minLiquidityMon: Number(env("MIN_LIQUIDITY_MON", "1000")),
   maxSpreadBps: Number(env("MAX_SPREAD_BPS", "12")),
   minScore: Number(env("MIN_SCORE", "25")),
+  /**
+   * Maker decomposition: how many blocks after a fill the markout is measured.
+   * The paper's adverse-selection term is a post-trade drift; 100 blocks is the
+   * same horizon the decision model is asked about (~30 s).
+   */
+  markoutBlocks: Number(env("MARKOUT_BLOCKS", "100")),
   /** Blocks of OrderBook logs the boot recovery replays to learn what we still have resting. */
   recoveryLookbackBlocks: Number(env("RECOVERY_LOOKBACK_BLOCKS", "10000")),
   /** Startup deposits into the Kuru margin account, topped up to these balances. Limit orders draw from margin, not the wallet. */

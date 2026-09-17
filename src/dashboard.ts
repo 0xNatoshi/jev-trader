@@ -97,6 +97,9 @@ export function dashboardHtml(): string {
     <div class="card"><h2>Position<span class="dim" id="posside"></span></h2><div>
       <div class="kv" id="pos"></div>
     </div></div>
+    <div class="card"><h2>Maker edge<span class="dim" id="mmn"></span></h2><div>
+      <div class="kv" id="mm"></div>
+    </div></div>
     <div class="card"><h2>Score<span class="dim">deterministic 0 to 100</span></h2><div>
       <div class="kv" id="scorebody"></div>
     </div></div>
@@ -237,16 +240,36 @@ export function dashboardHtml(): string {
   function renderTotals() {
     if (!state || !state.latest) return;
     var t = state.latest.totals;
+    var net = t.mm ? (t.mm.captureBps || 0) + (t.mm.markoutBps || 0) : 0;
     document.getElementById('totals').innerHTML = kv([
       ['pnl', money(t.pnlUsd), t.pnlUsd >= 0 ? 'up' : 'down'],
       ['realised', money(t.realizedUsd)],
+      ['net edge', num(net, 2) + ' bps', net >= 0 ? 'up' : 'down'],
+      ['carry', money(t.mm ? t.mm.carryUsd : 0)],
       ['gas cost', num(t.gasUsd, 4)],
       ['jev cost', num(t.jevUsd, 4)],
       ['pnl pct', num(t.pnlPct, 3) + ' pct']
     ]);
   }
 
-  function renderAll() { renderHeader(); renderSystem(); renderReflexes(); renderCoverage(); renderFeed(); renderDetail(); renderPosition(); renderScore(); renderTotals(); }
+  // The maker's edge, the way the literature splits it: what we quoted (capture),
+  // what the flow knew (markout), and what holding the inventory added (carry).
+  function renderMaker() {
+    if (!state || !state.latest || !state.latest.totals.mm) return;
+    var mm = state.latest.totals.mm;
+    var net = (mm.captureBps || 0) + (mm.markoutBps || 0);
+    document.getElementById('mmn').textContent = (mm.n || 0) + ' fills marked';
+    document.getElementById('mm').innerHTML = kv([
+      ['quoted', num(mm.captureBps, 2) + ' bps', mm.captureBps >= 0 ? 'up' : 'down'],
+      ['markout', num(mm.markoutBps, 2) + ' bps', mm.markoutBps >= 0 ? 'up' : 'down'],
+      ['net edge', num(net, 2) + ' bps', net >= 0 ? 'up' : 'down'],
+      ['capture', money(mm.captureUsd)],
+      ['markout usd', money(mm.markoutUsd)],
+      ['carry usd', money(mm.carryUsd), mm.carryUsd >= 0 ? 'up' : 'down']
+    ]);
+  }
+
+  function renderAll() { renderHeader(); renderSystem(); renderReflexes(); renderCoverage(); renderFeed(); renderDetail(); renderPosition(); renderMaker(); renderScore(); renderTotals(); }
 
   async function loadJournal() {
     try {

@@ -45,6 +45,22 @@ forbid, or send anything.
   re-sent. `Trader.recover()` reconciles open sends at boot by hash then nonce;
   `recovery_pending` locks new entries while anything is unexplained.
 
+## Maker edge: the PnL split we judge the strategy by
+
+Directional accuracy is not the question a maker answers (see `docs/INSIGHTS.md`,
+arXiv 2607.11888). Every fill is decomposed, `MARKOUT_BLOCKS` (default 100) after
+it lands, and the three terms live in `totals.mm`, the journal (`markout`
+transition), the console and the daily report:
+
+- `quoted` (capture): sign x (mid at fill - our price) x size. What we sold the
+  option to trade for.
+- `markout`: sign x (mid after H - mid at fill) x size. Negative means the flow
+  knew something we did not. The adverse selection term, in bps of the mid.
+- `carry`: mark-to-market of the inventory we hold between fills. The part that is
+  not market making.
+- **net edge = quoted + markout.** A maker with a positive quote and a negative
+  net is being picked off, not paid. `dashboard` shows it as MAKER EDGE.
+
 ## Runbook
 
 - Run: `bun run src/index.ts` (dry-run by default). JSON on `:3000`, console on
