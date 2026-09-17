@@ -45,12 +45,19 @@ export const config = {
   /** Toxicity: one-sided taker flow over a rolling window. VPIN-style volume buckets
    *  saturate on this market (a single print is larger than any sane bucket), so the
    *  measure is net/gross taker volume over the last `flowWindowBlocks`. */
+  /** Quoting: reservation price + inventory skew + volatility-scaled half-spread. */
+  mmGamma: Number(env("MM_GAMMA", "0.6")),
+  mmLiqHalfSpreadBps: Number(env("MM_LIQ_HALF_SPREAD_BPS", "1.5")),
+  mmMinHalfSpreadBps: Number(env("MM_MIN_HALF_SPREAD_BPS", "0.5")),
+  mmMaxDistanceBps: Number(env("MM_MAX_DISTANCE_BPS", "3")),
   flowWindowBlocks: Number(env("FLOW_WINDOW_BLOCKS", "300")),
   flowMinVolumeMon: Number(env("FLOW_MIN_VOLUME_MON", "10000")),
   /** Side-aware gate: stand down on the side the flow is running over. */
   maxToxicity: Number(env("MAX_TOXICITY", "0.7")),
-  /** Circuit breaker: pause every quote, in either direction. */
-  maxToxicityExtreme: Number(env("MAX_TOXICITY_EXTREME", "0.98")),
+  /** Circuit breaker: pause every quote, in either direction. The tape on this
+   *  market is one-sided most of the time (median |imbalance| 0.92 over 5 minutes),
+   *  so this sits at the extreme tail, not at a "calm" level. */
+  maxToxicityExtreme: Number(env("MAX_TOXICITY_EXTREME", "0.995")),
   /**
    * Maker decomposition: how many blocks after a fill the markout is measured.
    * The paper's adverse-selection term is a post-trade drift; 100 blocks is the

@@ -136,8 +136,8 @@ export class Market {
    * Sign and fire one `batchUpdate`: cancel the given resting orders, post one new post-only limit
    * order. Returns as soon as the RPC has the hash. `pollPending` resolves placed/reverted later.
    */
-  async send(block: number, side: Side, sizeMon: number, book: Book, cancel: number[], capped: boolean): Promise<Quote> {
-    const price = this.quotePrice(side, book);
+  async send(block: number, side: Side, sizeMon: number, book: Book, cancel: number[], capped: boolean, priceArg?: number): Promise<Quote> {
+    const price = priceArg ?? this.quotePrice(side, book);
     if (!this.wallet) return { side, price, size: sizeMon, txHash: null, gasMon: 0, cancel, status: "sim", orderId: null, capped };
 
     const tx = this.buildTx(side, sizeMon, price, cancel);

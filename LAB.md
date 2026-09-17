@@ -61,6 +61,23 @@ transition), the console and the daily report:
 - **net edge = quoted + markout.** A maker with a positive quote and a negative
   net is being picked off, not paid. `dashboard` shows it as MAKER EDGE.
 
+## Quoting: reservation price, skew, volatility-scaled spread
+
+`src/quoting.ts` is a deterministic two-line version of Avellaneda-Stoikov:
+
+- `sigma` is the **realised horizon volatility**: the stdev of overlapping
+  `HORIZON_BLOCKS` returns in our own mid series. Measuring the horizon return
+  directly matters: extrapolating one-block noise by sqrt(T) inflated sigma on a
+  tick-quantised book and priced our quotes ~9 bps off mid, behind the touch, with
+  zero fills.
+- `r = mid x (1 - qNorm x gamma x sigma)`: long inventory shifts the whole ladder
+  **down**, so we sell eagerly and buy reluctantly.
+- `delta = max(min, gamma x sigma + liq)`: a faster tape widens the half-spread,
+  which is the direct answer to the markout we measure.
+- The ladder is clamped to the touch (`INSIDE_TICKS` inside at most, `MM_MAX_DISTANCE_BPS`
+  behind at worst) and never crosses. With a calm tape it lands one tick inside the
+  touch exactly as the previous rule did; with a fast one it backs off.
+
 ## Sizing and toxicity (from the 17 Sep sweep)
 
 - **Sizing is a function of depth** (`Trader.quoteSize`): the base `TRADE_SIZE_MON`

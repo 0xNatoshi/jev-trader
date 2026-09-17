@@ -101,6 +101,9 @@ export function dashboardHtml(): string {
     <div class="card"><h2>Maker edge<span class="dim" id="mmn"></span></h2><div>
       <div class="kv" id="mm"></div>
     </div></div>
+    <div class="card"><h2>Quoting<span class="dim" id="planr"></span></h2><div>
+      <div class="kv" id="plan"></div>
+    </div></div>
     <div class="card"><h2>Score<span class="dim">deterministic 0 to 100</span></h2><div>
       <div class="kv" id="scorebody"></div>
     </div></div>
@@ -274,7 +277,20 @@ export function dashboardHtml(): string {
     ]);
   }
 
-  function renderAll() { renderHeader(); renderSystem(); renderReflexes(); renderCoverage(); renderFeed(); renderDetail(); renderPosition(); renderMaker(); renderScore(); renderTotals(); }
+  // The ladder: reservation price, inventory skew and the volatility-scaled half-spread.
+  function renderQuoting() {
+    if (!state || !state.latest || !state.latest.plan) return;
+    var p = state.latest.plan;
+    document.getElementById('planr').textContent = p.r ? 'r ' + Number(p.r).toFixed(6) : '';
+    document.getElementById('plan').innerHTML = kv([
+      ['reservation', p.r ? Number(p.r).toFixed(6) : '-'],
+      ['vol horizon', num(p.volBps, 2) + ' bps'],
+      ['half-spread', num(p.deltaBps, 2) + ' bps'],
+      ['skew', (p.skewBps >= 0 ? '+' : '') + num(p.skewBps, 2) + ' bps', p.skewBps >= 0 ? 'up' : 'down']
+    ]);
+  }
+
+  function renderAll() { renderHeader(); renderSystem(); renderReflexes(); renderCoverage(); renderFeed(); renderDetail(); renderPosition(); renderMaker(); renderQuoting(); renderScore(); renderTotals(); }
 
   async function loadJournal() {
     try {

@@ -1,10 +1,12 @@
 import { appendFileSync, mkdirSync } from "node:fs";
+import { log10 } from "./book";
 import { config } from "./config";
 import { Market, type Book, type Fill, type Quote, type QuoteResult, type Side } from "./market";
 import type { Action, Decision, Model, TradeState } from "./model";
 import { checkReflexes, killSwitchActive, type ReflexFacts } from "./reflexes";
 import { marketScore, type ScorePart } from "./score";
 import { FlowToxicity } from "./toxicity";
+import { horizonVolBps, quotePlan, type QuotePlan } from "./quoting";
 import { Store, type Impulse, type Node, type Verdict } from "./store";
 import { TradeFeed, type MakerFill, type TradePrint } from "./trades";
 
@@ -32,6 +34,8 @@ export interface BlockEvent {
   toxicity: number | null;
   /** Signed flow in [-1, 1]: positive = taker buying dominates. */
   flowSigned: number | null;
+  /** Quoting ladder computed this block: reservation price, skew and half-spread (bps). */
+  plan: { r: number; skewBps: number; deltaBps: number; volBps: number } | null;
   /** Our size known to be resting on the book after this block's order. */
   resting: { bidMon: number; askMon: number };
   position: { side: "long" | "short" | "flat"; size: number; entryPrice: number | null; unrealizedUsd: number; unrealizedMon: number };
@@ -130,6 +134,8 @@ export class Trader {
   get unresolvedCount() { return this.unresolved; }
   /** One-sided taker flow over a rolling window; null until there is enough tape. */
   readonly flow = new FlowToxicity(config.flowWindowBlocks, config.flowMinVolumeMon);
+  /** Last ladder computed: reservation price, skew, volatility-scaled half-spread. */
+  plan: QuotePlan | null = null;
   /** Impulses each reflex stopped this session, by reflex name. */
   readonly reflexHits: Record<string, number> = {};
   /** Sends the chain has not explained yet. Above zero, the recovery reflex locks new entries. */
@@ -168,10 +174,13 @@ export class Trader {
     try {
       const book = await this.market.readBook();
       const readMs = performance.now() - t0;
+      let plan: QuotePlan | null = null;
       this.lastBook = book;
       this.mids.push(book.mid);
       this.resolveMarkouts(block, book.mid);
       this.markCarry(book.mid);
+      // The ladder is computed every block, so the console always shows where we price.
+      plan = this.currentPlan(book);
       if (this.mids.length > 400) this.mids.shift();
       this.trades?.poll(block).then(() => this.harvest()); // off the hot path: eth_getLogs for prints (and our fills) since the last poll
 
@@ -261,14 +270,15 @@ export class Trader {
               d.action = wanted;
               const cancel = [...this.orders.keys()].filter((id) => id > 0); // simulated orders have negative ids
               const sizeMon = this.quoteSize(book, wanted);
+              const px = wanted === "buy" ? plan.bid : plan.ask;
               // The send is journalled BEFORE the signature: a crash in between leaves a row recovery can reconcile.
               this.store.openIntent(impulse, {
-                side: wanted, sizeMon, price: this.market.quotePrice(wanted, book),
+                side: wanted, sizeMon, price: px,
                 txHash: null, nonce: this.market.wallet ? this.market.nextNonce : null,
                 status: this.market.wallet ? "sent" : "sim",
               });
               try {
-                quote = await this.market.send(block, wanted, sizeMon, book, cancel, false);
+                quote = await this.market.send(block, wanted, sizeMon, book, cancel, false, px);
                 this.totals.quotes++;
                 this.store.openIntent(impulse, { ...impulse.intent!, txHash: quote.txHash, price: quote.price, status: quote.status === "sim" ? "sim" : "sent" });
                 this.journal(impulse, "jev", "pass", jevNote);
@@ -294,7 +304,7 @@ export class Trader {
           decision = d;
         }
       }
-      this.emit(block, book, decision, quote, false, { readMs: Math.round(readMs), loopMs: Math.round(performance.now() - t0) }, exit, { impulseId, reflex: journalReflex });
+      this.emit(block, book, decision, quote, false, { readMs: Math.round(readMs), loopMs: Math.round(performance.now() - t0) }, exit, { impulseId, reflex: journalReflex, plan });
     } catch (e) {
       console.error(`block ${block}:`, (e as Error).message);
     } finally {
@@ -609,6 +619,29 @@ export class Trader {
     return ratio >= config.deepDepthRatio ? config.maxQuoteMon : config.tradeSizeMon;
   }
 
+  /**
+   * The ladder for this block. Sigma is the realised horizon volatility from our own
+   * mid series, so a fast tape widens the half-spread and backs us off the touch
+   * instead of quoting into the move; a long book skews both quotes down.
+   */
+  private currentPlan(book: Book): QuotePlan {
+    const sigmaBps = horizonVolBps(this.mids.slice(-120), config.horizonBlocks);
+    this.plan = quotePlan(
+      {
+        mid: book.mid, bestBid: book.bid, bestAsk: book.ask,
+        inventoryMon: this.position.mon, maxPositionMon: config.maxPositionMon, sigmaBps,
+      },
+      {
+        gamma: config.mmGamma, horizonBlocks: config.horizonBlocks,
+        liqHalfSpreadBps: config.mmLiqHalfSpreadBps, minHalfSpreadBps: config.mmMinHalfSpreadBps,
+        maxDistanceBps: config.mmMaxDistanceBps, insideTicks: config.quoteInsideTicks,
+        tickSize: Number(this.market.params.tickSize.toString()),
+        priceDec: log10(this.market.params.pricePrecision),
+      },
+    );
+    return this.plan;
+  }
+
   /** Everything the reflexes read, assembled from live state. No model involved. */
   private reflexFacts(book: Book, side: Side): ReflexFacts {
     const depth = book.depthBps["25"] ?? { bid: 0, ask: 0 };
@@ -682,7 +715,7 @@ export class Trader {
   private entryPrice() { return this.position.mon ? this.position.costUsd / this.position.mon : null; }
   private unrealizedUsd(mid: number) { return this.position.mon ? this.position.mon * (mid - this.entryPrice()!) : 0; }
 
-  private emit(block: number, book: Book, decision: Decision | null, quote: Quote | null, late: boolean, timing?: Timing, exit: BlockEvent["exit"] = null, journal: { impulseId: string | null; reflex: string | null } | null = null) {
+  private emit(block: number, book: Book, decision: Decision | null, quote: Quote | null, late: boolean, timing?: Timing, exit: BlockEvent["exit"] = null, journal: { impulseId: string | null; reflex: string | null; plan?: QuotePlan | null } | null = null) {
     const t = this.totals;
     t.gasUsd = t.gasMon * book.mid;
     const unrealized = this.unrealizedUsd(book.mid);
@@ -701,6 +734,7 @@ export class Trader {
       score: this.score,
       toxicity: this.flow.value(book.block),
       flowSigned: this.flow.signed(book.block),
+      plan: journal?.plan ? { r: journal.plan.reservation, skewBps: journal.plan.skewBps, deltaBps: journal.plan.deltaBps, volBps: journal.plan.volBps } : null,
       reflex: journal?.reflex ?? null,
       impulseId: journal?.impulseId ?? null,
       resting: { bidMon: round(this.restingMon("buy"), 1), askMon: round(this.restingMon("sell"), 1) },
